@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CityArts Teacher Finder</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f4f8;
+      color: #1a2942;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #1a3c5e;
+      color: #fff;
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    header h1 { font-size: 1.25rem; font-weight: 600; }
+    header .sub { font-size: 0.8rem; opacity: 0.65; margin-top: 2px; }
+
+    .container { max-width: 1300px; margin: 0 auto; padding: 28px 24px; }
+
+    /* Stats */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+    .stat-card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 18px 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.07);
+    }
+    .stat-card .num {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #1a3c5e;
+      line-height: 1;
+    }
+    .stat-card .label {
+      font-size: 0.75rem;
+      color: #6b7c93;
+      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+    .tab {
+      padding: 8px 20px;
+      border-radius: 8px 8px 0 0;
+      border: none;
+      cursor: pointer;
+      font-size: 0.9rem;
+      font-weight: 500;
+      background: #dde4ef;
+      color: #4a5568;
+      transition: background .15s;
+    }
+    .tab.active { background: #fff; color: #1a3c5e; }
+
+    /* Panel */
+    .panel {
+      background: #fff;
+      border-radius: 0 10px 10px 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.07);
+      padding: 20px;
+    }
+
+    /* Controls row */
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 16px;
+      align-items: center;
+    }
+    .controls input, .controls select {
+      padding: 7px 12px;
+      border: 1px solid #cbd5e0;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .controls input:focus, .controls select:focus { border-color: #1a3c5e; }
+    .controls input[type="search"] { min-width: 220px; }
+
+    label.checkbox {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.875rem;
+      color: #4a5568;
+      cursor: pointer;
+    }
+
+    .btn {
+      padding: 7px 16px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: background .15s;
+    }
+    .btn-primary { background: #1a3c5e; color: #fff; }
+    .btn-primary:hover { background: #14304e; }
+    .btn-export { background: #2e7d32; color: #fff; }
+    .btn-export:hover { background: #256427; }
+
+    .spacer { flex: 1; }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    th {
+      background: #f7f9fc;
+      text-align: left;
+      padding: 9px 12px;
+      font-weight: 600;
+      color: #4a5568;
+      border-bottom: 2px solid #e2e8f0;
+      white-space: nowrap;
+    }
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid #edf2f7;
+      vertical-align: top;
+    }
+    tr:hover td { background: #f7faff; }
+    td a { color: #1a3c5e; text-decoration: none; }
+    td a:hover { text-decoration: underline; }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 99px;
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+    .badge-green { background: #e8f5e9; color: #256427; }
+    .badge-gray  { background: #edf2f7; color: #718096; }
+    .badge-orange { background: #fff3e0; color: #b45309; }
+
+    /* Pagination */
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+      font-size: 0.85rem;
+      color: #6b7c93;
+    }
+    .pagination button {
+      padding: 4px 12px;
+      border: 1px solid #cbd5e0;
+      border-radius: 5px;
+      background: #fff;
+      cursor: pointer;
+      font-size: 0.82rem;
+    }
+    .pagination button:disabled { opacity: .4; cursor: default; }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #6b7c93;
+    }
+    .empty-state .icon { font-size: 2.5rem; margin-bottom: 12px; }
+    .empty-state p { font-size: 0.9rem; line-height: 1.6; }
+    .empty-state code {
+      background: #f0f4f8;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.82rem;
+    }
+
+    .loading { text-align: center; padding: 40px; color: #6b7c93; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>CityArts Teacher Finder</h1>
+    <div class="sub">Art teacher contacts at US public schools</div>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="num" id="stat-schools">{{ stats.schools_total }}</div>
+      <div class="label">Schools Loaded</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" id="stat-with-url">{{ stats.schools_with_url }}</div>
+      <div class="label">Have Website URL</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" id="stat-scraped">{{ stats.scraped }}</div>
+      <div class="label">Websites Scraped</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" id="stat-teachers">{{ stats.teachers_total }}</div>
+      <div class="label">Art Teachers Found</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" id="stat-emails">{{ stats.teachers_with_email }}</div>
+      <div class="label">With Email</div>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('teachers', this)">Art Teachers</button>
+    <button class="tab" onclick="switchTab('schools', this)">All Schools</button>
+  </div>
+
+  <!-- Teachers panel -->
+  <div class="panel" id="panel-teachers">
+    <div class="controls">
+      <input type="search" id="teacher-search" placeholder="Search name, school, city…" oninput="debounce(loadTeachers)">
+      <select id="teacher-state" onchange="loadTeachers()">
+        <option value="">All States</option>
+        <option value="KS">Kansas</option>
+        <option value="TX">Texas</option>
+        <option value="NY">New York</option>
+        <option value="CA">California</option>
+        <option value="IL">Illinois</option>
+      </select>
+      <label class="checkbox">
+        <input type="checkbox" id="teacher-only-email" onchange="loadTeachers()">
+        Email only
+      </label>
+      <div class="spacer"></div>
+      <button class="btn btn-export" onclick="exportTeachers()">Download .xlsx</button>
+    </div>
+    <div id="teacher-table-wrap"></div>
+    <div class="pagination" id="teacher-pagination"></div>
+  </div>
+
+  <!-- Schools panel -->
+  <div class="panel" id="panel-schools" style="display:none">
+    <div class="controls">
+      <input type="search" id="school-search" placeholder="Search school, city, district…" oninput="debounce(loadSchools)">
+      <select id="school-state" onchange="loadSchools()">
+        <option value="">All States</option>
+        <option value="KS">Kansas</option>
+        <option value="TX">Texas</option>
+        <option value="NY">New York</option>
+        <option value="CA">California</option>
+        <option value="IL">Illinois</option>
+      </select>
+      <label class="checkbox">
+        <input type="checkbox" id="school-only-url" onchange="loadSchools()">
+        Has website
+      </label>
+      <div class="spacer"></div>
+      <button class="btn btn-export" onclick="exportSchools()">Download .xlsx</button>
+    </div>
+    <div id="school-table-wrap"></div>
+    <div class="pagination" id="school-pagination"></div>
+  </div>
+
+</div>
+
+<script>
+  let teacherPage = 1, schoolPage = 1;
+  let debounceTimer = null;
+
+  function debounce(fn) {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(fn, 300);
+  }
+
+  function switchTab(tab, el) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('panel-teachers').style.display = tab === 'teachers' ? '' : 'none';
+    document.getElementById('panel-schools').style.display  = tab === 'schools'  ? '' : 'none';
+    if (tab === 'schools') loadSchools();
+  }
+
+  // ---- Teachers ----
+  async function loadTeachers(page) {
+    if (page) teacherPage = page;
+    const q     = document.getElementById('teacher-search').value;
+    const state = document.getElementById('teacher-state').value;
+    const email = document.getElementById('teacher-only-email').checked ? '1' : '0';
+    const wrap  = document.getElementById('teacher-table-wrap');
+    wrap.innerHTML = '<div class="loading">Loading…</div>';
+
+    const res  = await fetch(`/api/teachers?q=${encodeURIComponent(q)}&state=${state}&only_email=${email}&page=${teacherPage}`);
+    const data = await res.json();
+
+    if (!data.rows.length) {
+      wrap.innerHTML = `
+        <div class="empty-state">
+          <div class="icon">🎨</div>
+          <p>No art teachers found yet.<br>
+          Run the scraper to crawl school websites:<br>
+          <code>python main.py scrape --states KS --limit 50</code></p>
+        </div>`;
+      document.getElementById('teacher-pagination').innerHTML = '';
+      return;
+    }
+
+    const html = `
+      <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Teacher</th><th>Title</th><th>Email</th>
+          <th>School</th><th>City</th><th>State</th><th>District</th><th>Website</th>
+        </tr></thead>
+        <tbody>
+        ${data.rows.map(r => `
+          <tr>
+            <td>${esc(r.teacher_name)}</td>
+            <td>${esc(r.title || '')}</td>
+            <td>${r.email ? `<a href="mailto:${esc(r.email)}">${esc(r.email)}</a>` : badge('no email', 'gray')}</td>
+            <td>${esc(r.school_name)}</td>
+            <td>${esc(r.city || '')}</td>
+            <td>${esc(r.state)}</td>
+            <td>${esc(r.district_name || '')}</td>
+            <td>${r.website_url ? `<a href="${esc(r.website_url)}" target="_blank" rel="noopener">↗</a>` : ''}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>`;
+    wrap.innerHTML = html;
+    renderPagination('teacher-pagination', data.total, data.per_page, teacherPage, loadTeachers);
+  }
+
+  // ---- Schools ----
+  async function loadSchools(page) {
+    if (page) schoolPage = page;
+    const q      = document.getElementById('school-search').value;
+    const state  = document.getElementById('school-state').value;
+    const onlyUrl = document.getElementById('school-only-url').checked ? '1' : '0';
+    const wrap   = document.getElementById('school-table-wrap');
+    wrap.innerHTML = '<div class="loading">Loading…</div>';
+
+    const res  = await fetch(`/api/schools?q=${encodeURIComponent(q)}&state=${state}&only_url=${onlyUrl}&page=${schoolPage}`);
+    const data = await res.json();
+
+    if (!data.rows.length) {
+      wrap.innerHTML = '<div class="empty-state"><div class="icon">🏫</div><p>No schools found.</p></div>';
+      document.getElementById('school-pagination').innerHTML = '';
+      return;
+    }
+
+    const html = `
+      <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>School</th><th>City</th><th>State</th><th>District</th>
+          <th>Website</th><th>Scraped</th>
+        </tr></thead>
+        <tbody>
+        ${data.rows.map(r => `
+          <tr>
+            <td>${esc(r.school_name)}</td>
+            <td>${esc(r.city || '')}</td>
+            <td>${esc(r.state)}</td>
+            <td>${esc(r.district_name || '')}</td>
+            <td>${r.website_url ? `<a href="${esc(r.website_url)}" target="_blank" rel="noopener">${esc(r.website_url)}</a>` : badge('no url', 'gray')}</td>
+            <td>${r.scraped ? badge('done', 'green') : badge('pending', 'orange')}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>`;
+    wrap.innerHTML = html;
+    renderPagination('school-pagination', data.total, data.per_page, schoolPage, loadSchools);
+  }
+
+  function renderPagination(id, total, perPage, current, fn) {
+    const pages = Math.ceil(total / perPage);
+    const el = document.getElementById(id);
+    el.innerHTML = `
+      <button onclick="${fn.name}(${current - 1})" ${current <= 1 ? 'disabled' : ''}>← Prev</button>
+      <span>Page ${current} of ${pages} &nbsp;·&nbsp; ${total.toLocaleString()} total</span>
+      <button onclick="${fn.name}(${current + 1})" ${current >= pages ? 'disabled' : ''}>Next →</button>`;
+  }
+
+  function exportTeachers() {
+    const state = document.getElementById('teacher-state').value;
+    const email = document.getElementById('teacher-only-email').checked ? '1' : '0';
+    window.location = `/export/teachers.xlsx?state=${state}&only_email=${email}`;
+  }
+
+  function exportSchools() {
+    const state = document.getElementById('school-state').value;
+    window.location = `/export/schools.xlsx?state=${state}`;
+  }
+
+  function esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function badge(text, type) {
+    return `<span class="badge badge-${type}">${text}</span>`;
+  }
+
+  // Initial load
+  loadTeachers();
+</script>
+</body>
+</html>

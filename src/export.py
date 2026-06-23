@@ -20,17 +20,19 @@ def export_csv(states: list[str], out_path: str | None = None) -> int:
         rows = conn.execute(
             """
             SELECT
+                sc.state,
+                sc.district_name,
                 sc.school_name,
                 sc.city,
-                sc.state,
                 s.teacher_name,
+                s.title,
                 s.email,
                 s.resolution_method,
                 sc.website_url AS school_website
             FROM staff s
             JOIN schools sc ON sc.id = s.school_id
             WHERE sc.state IN ({})
-            ORDER BY sc.state, sc.school_name, s.teacher_name
+            ORDER BY sc.state, sc.district_name, sc.school_name, s.teacher_name
             """.format(",".join("?" * len(states))),
             states,
         ).fetchall()
@@ -39,7 +41,7 @@ def export_csv(states: list[str], out_path: str | None = None) -> int:
         log.warning("No results found for states: %s", states)
         return 0
 
-    fieldnames = ["school_name", "city", "state", "teacher_name", "email", "resolution_method", "school_website"]
+    fieldnames = ["state", "district_name", "school_name", "city", "teacher_name", "title", "email", "resolution_method", "school_website"]
 
     if out_path:
         fh = open(out_path, "w", newline="", encoding="utf-8")

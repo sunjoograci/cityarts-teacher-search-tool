@@ -36,6 +36,10 @@ def main() -> None:
     p_ingest.add_argument("--states", nargs="+", default=["TX", "KS"])
     p_ingest.add_argument("--limit", type=int, default=None, help="Max schools (for testing)")
     p_ingest.add_argument("--force", action="store_true", help="Re-download NCES file")
+    p_ingest.add_argument(
+        "--file", default=None,
+        help="Path to a local NCES data file (.csv, .xls, .xlsx). Skips automatic download.",
+    )
 
     # scrape
     p_scrape = sub.add_parser("scrape", help="Scrape school staff directories.")
@@ -54,8 +58,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "ingest":
+        from pathlib import Path
         from src.ingest import ingest_schools
-        n = ingest_schools(args.states, args.limit)
+        n = ingest_schools(args.states, args.limit, source_file=Path(args.file) if args.file else None)
         print(f"Ingested {n} schools.")
 
     elif args.command == "scrape":
