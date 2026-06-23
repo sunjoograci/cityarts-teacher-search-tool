@@ -340,7 +340,7 @@
             <td>${esc(r.city || '')}</td>
             <td>${esc(r.state)}</td>
             <td>${esc(r.district_name || '')}</td>
-            <td>${r.website_url ? `<a href="${esc(r.website_url)}" target="_blank" rel="noopener">↗</a>` : ''}</td>
+            <td>${websiteLink(r.email, r.resolution_method, r.website_url)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -409,6 +409,13 @@
   function exportSchools() {
     const state = document.getElementById('school-state').value;
     window.location = `/export/schools.xlsx?state=${state}`;
+  }
+
+  function websiteLink(email, method, websiteUrl) {
+    const isContactForm = method === 'send_message_button' || method === 'contact_form'
+                          || (email && email.startsWith('http'));
+    const url = isContactForm ? email : websiteUrl;
+    return url ? `<a href="${esc(url)}" target="_blank" rel="noopener">↗</a>` : '';
   }
 
   function emailCell(email, method, websiteUrl) {
