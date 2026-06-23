@@ -52,7 +52,13 @@ def export_csv(states: list[str], out_path: str | None = None) -> int:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow(dict(row))
+            r = dict(row)
+            # Contact form records store a URL in the email column — replace with label
+            if r.get("resolution_method") in ("send_message_button", "contact_form") or (
+                r.get("email", "") or ""
+            ).startswith("http"):
+                r["email"] = "reach out on website"
+            writer.writerow(r)
     finally:
         if out_path:
             fh.close()

@@ -50,6 +50,15 @@ def main() -> None:
     p_enrich = sub.add_parser("enrich", help="Enrich emails via Hunter.io / SMTP.")
     p_enrich.add_argument("--limit", type=int, default=None)
 
+    # check-contacts
+    p_contacts = sub.add_parser(
+        "check-contacts",
+        help="Re-visit schools and look for 'send a message' links for staff with no email.",
+    )
+    p_contacts.add_argument("--states", nargs="+", default=["KS"])
+    p_contacts.add_argument("--limit", type=int, default=None)
+    p_contacts.add_argument("--reset", action="store_true", help="Re-check records already marked contact_form")
+
     # export
     p_export = sub.add_parser("export", help="Export results as CSV.")
     p_export.add_argument("--states", nargs="+", default=["TX", "KS"])
@@ -71,6 +80,11 @@ def main() -> None:
     elif args.command == "enrich":
         from src.enrich import enrich_staff
         enrich_staff(args.limit)
+
+    elif args.command == "check-contacts":
+        import asyncio
+        from src.contact_forms import run_contact_form_check
+        asyncio.run(run_contact_form_check([s.upper() for s in args.states], args.limit, args.reset))
 
     elif args.command == "export":
         from src.export import export_csv

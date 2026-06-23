@@ -335,7 +335,7 @@
           <tr>
             <td>${esc(r.teacher_name)}</td>
             <td>${esc(r.title || '')}</td>
-            <td>${r.email ? `<a href="mailto:${esc(r.email)}">${esc(r.email)}</a>` : badge('no email', 'gray')}</td>
+            <td>${emailCell(r.email, r.resolution_method, r.website_url)}</td>
             <td>${esc(r.school_name)}</td>
             <td>${esc(r.city || '')}</td>
             <td>${esc(r.state)}</td>
@@ -409,6 +409,16 @@
   function exportSchools() {
     const state = document.getElementById('school-state').value;
     window.location = `/export/schools.xlsx?state=${state}`;
+  }
+
+  function emailCell(email, method, websiteUrl) {
+    if (!email) return badge('no email', 'gray');
+    // Contact form / send-message button — email column holds a URL, not an address
+    if (method === 'send_message_button' || method === 'contact_form' || email.startsWith('http')) {
+      const link = email.startsWith('http') ? email : websiteUrl;
+      return `<a href="${esc(link)}" target="_blank" rel="noopener">${badge('reach out on website', 'orange')}</a>`;
+    }
+    return `<a href="mailto:${esc(email)}">${esc(email)}</a>`;
   }
 
   function esc(s) {

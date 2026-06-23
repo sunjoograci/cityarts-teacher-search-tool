@@ -49,6 +49,15 @@ ART_FALSE_POSITIVES = re.compile(r"\b(arthur|arturo|eart|mcart|smart)\b", re.IGN
 
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
+# Text patterns that indicate a "send a message" contact form link
+SEND_MESSAGE_RE = re.compile(
+    r"\b(send\s+a?\s*message|contact\s+me|email\s+me|message\s+me|send\s+email)\b",
+    re.IGNORECASE,
+)
+
+# Strip these button labels from scraped title text
+_TITLE_CLEANUP_RE = re.compile(r"\s*\bsend\s+(?:a\s+)?message\b.*$", re.IGNORECASE)
+
 DELAY_BETWEEN_REQUESTS = 2.5  # seconds, used when robots.txt has no Crawl-delay
 
 SCRAPER_UA = "Mozilla/5.0 (compatible; CityArts-TeacherFinder/1.0; +https://cityarts.org)"
@@ -166,19 +175,27 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
             if (!parent) return [];
             const titleEl = parent.querySelector('[class*=\"title\"]');
             if (!titleEl) return [];
-            const emailA = parent.querySelector('a[href^=\"mailto:\"]')
-                        || parent.closest('[class*=\"staff\"],[class*=\"person\"],[class*=\"card\"]')
-                           ?.querySelector('a[href^=\"mailto:\"]');
+            const card = parent.closest('[class*=\"staff\"],[class*=\"person\"],[class*=\"card\"]') || parent;
+            const emailA = card.querySelector('a[href^=\"mailto:\"]');
+            // Detect "send a message" / contact form links when no mailto found
+            let contactHref = '';
+            if (!emailA) {
+                const allLinks = [...card.querySelectorAll('a[href]')];
+                const msgLink = allLinks.find(a =>
+                    /send\\s+a?\\s*message|contact\\s+me|email\\s+me|message\\s+me/i.test(a.textContent)
+                );
+                if (msgLink) contactHref = msgLink.href;
+            }
             return [{
                 name: nameEl.innerText.trim(),
                 title: titleEl.innerText.trim(),
-                email: emailA ? emailA.href.replace('mailto:','') : ''
+                email: emailA ? emailA.href.replace('mailto:','') : contactHref
             }];
         })""",
     )
     for item in semantic:
         name = item.get("name", "").strip()
-        title = item.get("title", "").strip()
+        title = _TITLE_CLEANUP_RE.sub("", item.get("title", "")).strip()
         if not _is_art_teacher(title):
             continue
         if len(name.split()) < 2 or len(name) > 60:
@@ -191,17 +208,24 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
             "tr, li, .staff-member, .faculty-member, [class*='staff'], [class*='faculty'], [class*='employee'], [class*='person'], [class*='card']",
             """els => els.map(el => ({
                 text: el.innerText,
-                emails: [...el.querySelectorAll('a[href^="mailto:"]')].map(a => a.href.replace('mailto:',''))
+                emails: [...el.querySelectorAll('a[href^="mailto:"]')].map(a => a.href.replace('mailto:','')),
+                msgLink: (() => {
+                    const lnk = [...el.querySelectorAll('a[href]')].find(a =>
+                        /send\\s+a?\\s*message|contact\\s+me|email\\s+me|message\\s+me/i.test(a.textContent)
+                    );
+                    return lnk ? lnk.href : '';
+                })()
             }))""",
         )
         for item in candidates:
             raw = item.get("text", "").strip()
             item_emails = item.get("emails", [])
+            msg_link = item.get("msgLink", "")
             lines = [l.strip() for l in raw.splitlines() if l.strip()]
             if len(lines) < 2:
                 continue
             name_candidate = lines[0]
-            title_candidate = " ".join(lines[1:3])
+            title_candidate = _TITLE_CLEANUP_RE.sub("", " ".join(lines[1:3])).strip()
             if not _is_art_teacher(title_candidate):
                 continue
             if len(name_candidate.split()) < 2 or len(name_candidate) > 60:
@@ -210,6 +234,8 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
             if not email:
                 block_emails = EMAIL_RE.findall(raw)
                 email = block_emails[0] if block_emails else None
+            if not email and msg_link:
+                email = msg_link
             records.append(StaffRecord(name=name_candidate, title=title_candidate, email=email))
 
     # Strategy 3: mailto links — use surrounding container text to find name/title.

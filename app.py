@@ -182,11 +182,14 @@ def export_teachers_xlsx():
         cell.alignment = Alignment(horizontal="center")
 
     for row in rows:
+        email_val = row["email"] or ""
+        method = row["resolution_method"] or ""
+        is_form = method in ("send_message_button", "contact_form") or email_val.startswith("http")
         ws.append([
             row["teacher_name"],
             row["title"],
-            row["email"] or "",
-            row["resolution_method"],
+            "reach out on website" if is_form else email_val,
+            method,
             row["school_name"],
             row["city"],
             row["state"],
