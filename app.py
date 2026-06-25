@@ -5,8 +5,11 @@ Run:
     python app.py
 Then open http://localhost:5000
 """
+import asyncio
 import io
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
@@ -15,8 +18,92 @@ from src.db import DB_PATH, get_conn
 
 app = Flask(__name__)
 
+# ---------------------------------------------------------------------------
+# Background scrape job state
+# ---------------------------------------------------------------------------
+
+_scrape_lock = threading.Lock()
+_scrape_state: dict = {
+    "running": False,
+    "current": 0,
+    "total": 0,
+    "current_school": "",
+    "last_status": "",
+    "started_at": None,
+    "finished_at": None,
+    "error": None,
+    "states": [],
+    "rescrape": False,
+}
+
+
+def _run_scrape_thread(states: list[str], rescrape: bool) -> None:
+    from src.scraper import run_scraper
+
+    def on_progress(current, total, school_name, status):
+        _scrape_state["current"] = current
+        _scrape_state["total"] = total
+        _scrape_state["current_school"] = school_name
+        _scrape_state["last_status"] = status
+
+    try:
+        asyncio.run(run_scraper(states, rescrape_missed=rescrape, on_progress=on_progress))
+    except Exception as exc:
+        _scrape_state["error"] = str(exc)
+    finally:
+        _scrape_state["running"] = False
+        _scrape_state["finished_at"] = time.time()
+
+
+_ON_VERCEL = bool(__import__("os").environ.get("VERCEL"))
+
+
+@app.route("/api/scrape/start", methods=["POST"])
+def api_scrape_start():
+    if _ON_VERCEL:
+        return jsonify({"error": "Scraping must be run locally — Vercel is read-only. Run: python main.py scrape --states TX"}), 403
+    with _scrape_lock:
+        if _scrape_state["running"]:
+            return jsonify({"error": "A scrape is already running."}), 409
+        data = request.get_json(silent=True) or {}
+        states = [s.upper() for s in data.get("states", ["TX"])]
+        rescrape = bool(data.get("rescrape", False))
+        _scrape_state.update({
+            "running": True,
+            "current": 0,
+            "total": 0,
+            "current_school": "Preparing…",
+            "last_status": "",
+            "started_at": time.time(),
+            "finished_at": None,
+            "error": None,
+            "states": states,
+            "rescrape": rescrape,
+        })
+    threading.Thread(target=_run_scrape_thread, args=(states, rescrape), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/scrape/status")
+def api_scrape_status():
+    s = dict(_scrape_state)
+    elapsed = None
+    eta = None
+    if s["started_at"]:
+        elapsed = time.time() - s["started_at"]
+        if s["current"] > 0 and s["total"] > 0 and s["running"]:
+            rate = s["current"] / elapsed
+            remaining = s["total"] - s["current"]
+            eta = remaining / rate if rate > 0 else None
+    s["elapsed"] = elapsed
+    s["eta"] = eta
+    return jsonify(s)
+
 
 def _get_stats() -> dict:
+    if not DB_PATH.exists():
+        return {"schools_total": 0, "schools_with_url": 0, "scraped": 0,
+                "teachers_total": 0, "teachers_with_email": 0}
     with get_conn() as conn:
         schools_total = conn.execute("SELECT COUNT(*) FROM schools").fetchone()[0]
         schools_with_url = conn.execute(
@@ -278,4 +365,4 @@ def export_schools_xlsx():
 if __name__ == "__main__":
     if not DB_PATH.exists():
         print("No database found. Run: python main.py ingest --states KS")
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000, threaded=True, use_reloader=False)

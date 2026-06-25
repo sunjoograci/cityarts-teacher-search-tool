@@ -191,6 +191,65 @@
     }
 
     .loading { text-align: center; padding: 40px; color: #6b7c93; font-size: 0.9rem; }
+
+    /* Scrape panel */
+    .scrape-form { max-width: 480px; }
+    .scrape-form h3 { font-size: 0.95rem; font-weight: 600; color: #1a2942; margin-bottom: 10px; }
+    .state-grid {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px;
+    }
+    .state-chip {
+      display: flex; align-items: center; gap: 5px;
+      padding: 5px 12px; border-radius: 99px;
+      border: 1.5px solid #cbd5e0; background: #fff;
+      font-size: 0.82rem; cursor: pointer; user-select: none;
+      transition: border-color .15s, background .15s;
+    }
+    .state-chip input { margin: 0; cursor: pointer; }
+    .state-chip:has(input:checked) { border-color: #1a3c5e; background: #e8eef5; }
+    .scrape-options { margin-bottom: 18px; }
+    .scrape-options label {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.875rem; color: #4a5568; cursor: pointer;
+    }
+    .btn-scrape {
+      background: #1a3c5e; color: #fff;
+      padding: 9px 24px; border-radius: 6px; border: none;
+      font-size: 0.9rem; font-weight: 600; cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-scrape:hover:not(:disabled) { background: #14304e; }
+    .btn-scrape:disabled { opacity: .5; cursor: default; }
+
+    .progress-section { margin-top: 28px; }
+    .progress-header {
+      display: flex; justify-content: space-between; align-items: baseline;
+      margin-bottom: 6px; font-size: 0.85rem;
+    }
+    .progress-label { font-weight: 600; color: #1a2942; }
+    .progress-pct { color: #6b7c93; }
+    .progress-bar-track {
+      height: 10px; border-radius: 99px; background: #e2e8f0; overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%; border-radius: 99px; background: #1a3c5e;
+      transition: width .4s ease; width: 0%;
+    }
+    .progress-meta {
+      display: flex; flex-wrap: wrap; gap: 16px;
+      margin-top: 10px; font-size: 0.82rem; color: #6b7c93;
+    }
+    .progress-meta span b { color: #1a2942; }
+    .progress-school {
+      margin-top: 8px; font-size: 0.82rem; color: #4a5568;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+    }
+    .scrape-done {
+      margin-top: 14px; padding: 10px 14px; border-radius: 7px;
+      font-size: 0.85rem; font-weight: 500;
+    }
+    .scrape-done.ok { background: #e8f5e9; color: #256427; }
+    .scrape-done.err { background: #fdecea; color: #b71c1c; }
   </style>
 </head>
 <body>
@@ -232,6 +291,7 @@
   <div class="tabs">
     <button class="tab active" onclick="switchTab('teachers', this)">Art Teachers</button>
     <button class="tab" onclick="switchTab('schools', this)">All Schools</button>
+    <button class="tab" onclick="switchTab('scrape', this)">Scrape</button>
   </div>
 
   <!-- Teachers panel -->
@@ -280,6 +340,44 @@
     <div class="pagination" id="school-pagination"></div>
   </div>
 
+  <!-- Scrape panel -->
+  <div class="panel" id="panel-scrape" style="display:none">
+    <div class="scrape-form">
+      <h3>Select states to scrape</h3>
+      <div class="state-grid">
+        <label class="state-chip"><input type="checkbox" name="scrape-state" value="TX" checked> Texas</label>
+        <label class="state-chip"><input type="checkbox" name="scrape-state" value="KS"> Kansas</label>
+        <label class="state-chip"><input type="checkbox" name="scrape-state" value="NY"> New York</label>
+        <label class="state-chip"><input type="checkbox" name="scrape-state" value="CA"> California</label>
+        <label class="state-chip"><input type="checkbox" name="scrape-state" value="IL"> Illinois</label>
+      </div>
+      <div class="scrape-options">
+        <label>
+          <input type="checkbox" id="scrape-rescrape">
+          Include previously missed schools (no directory found, timeouts, errors)
+        </label>
+      </div>
+      <button class="btn-scrape" id="scrape-btn" onclick="startScrape()">Start Scraping</button>
+    </div>
+
+    <div class="progress-section" id="scrape-progress" style="display:none">
+      <div class="progress-header">
+        <span class="progress-label" id="progress-label">Scraping…</span>
+        <span class="progress-pct" id="progress-pct">0%</span>
+      </div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="progress-bar"></div>
+      </div>
+      <div class="progress-meta">
+        <span><b id="prog-current">0</b> / <b id="prog-total">0</b> schools</span>
+        <span>Elapsed: <b id="prog-elapsed">—</b></span>
+        <span>ETA: <b id="prog-eta">—</b></span>
+      </div>
+      <div class="progress-school" id="prog-school"></div>
+      <div id="scrape-result"></div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -296,7 +394,9 @@
     el.classList.add('active');
     document.getElementById('panel-teachers').style.display = tab === 'teachers' ? '' : 'none';
     document.getElementById('panel-schools').style.display  = tab === 'schools'  ? '' : 'none';
+    document.getElementById('panel-scrape').style.display   = tab === 'scrape'   ? '' : 'none';
     if (tab === 'schools') loadSchools();
+    if (tab === 'scrape')  pollScrapeStatus();
   }
 
   // ---- Teachers ----
@@ -436,8 +536,95 @@
     return `<span class="badge badge-${type}">${text}</span>`;
   }
 
+  // ---- Scrape ----
+  let scrapePoller = null;
+
+  async function startScrape() {
+    const states = [...document.querySelectorAll('input[name="scrape-state"]:checked')].map(el => el.value);
+    if (!states.length) { alert('Select at least one state.'); return; }
+    const rescrape = document.getElementById('scrape-rescrape').checked;
+
+    const res = await fetch('/api/scrape/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ states, rescrape }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || 'Failed to start scrape.');
+      return;
+    }
+    document.getElementById('scrape-progress').style.display = '';
+    document.getElementById('scrape-result').innerHTML = '';
+    document.getElementById('scrape-btn').disabled = true;
+    document.getElementById('scrape-btn').textContent = 'Scraping…';
+    startScrapePoller();
+  }
+
+  function startScrapePoller() {
+    clearInterval(scrapePoller);
+    scrapePoller = setInterval(pollScrapeStatus, 2000);
+  }
+
+  async function pollScrapeStatus() {
+    let data;
+    try {
+      const res = await fetch('/api/scrape/status');
+      data = await res.json();
+    } catch { return; }
+
+    const { running, current, total, current_school, last_status, elapsed, eta, error, finished_at } = data;
+
+    if (total > 0) {
+      const pct = Math.round((current / total) * 100);
+      document.getElementById('progress-bar').style.width = pct + '%';
+      document.getElementById('progress-pct').textContent = pct + '%';
+      document.getElementById('prog-current').textContent = current.toLocaleString();
+      document.getElementById('prog-total').textContent = total.toLocaleString();
+      document.getElementById('progress-label').textContent = running ? 'Scraping…' : 'Done';
+    }
+
+    document.getElementById('prog-elapsed').textContent = elapsed ? fmtTime(elapsed) : '—';
+    document.getElementById('prog-eta').textContent     = eta     ? fmtTime(eta)     : (running ? 'calculating…' : '—');
+
+    if (current_school) {
+      const statusLabel = last_status && last_status !== 'scraping' ? ` — ${last_status}` : '';
+      document.getElementById('prog-school').textContent = current_school + statusLabel;
+    }
+
+    if (!running) {
+      clearInterval(scrapePoller);
+      document.getElementById('scrape-btn').disabled = false;
+      document.getElementById('scrape-btn').textContent = 'Start Scraping';
+      if (finished_at) {
+        const resultEl = document.getElementById('scrape-result');
+        if (error) {
+          resultEl.innerHTML = `<div class="scrape-done err">Error: ${esc(error)}</div>`;
+        } else {
+          resultEl.innerHTML = `<div class="scrape-done ok">Scrape complete — ${(total||0).toLocaleString()} schools processed.</div>`;
+        }
+        // Refresh stats
+        const s = await (await fetch('/api/stats')).json();
+        document.getElementById('stat-scraped').textContent  = s.scraped.toLocaleString();
+        document.getElementById('stat-teachers').textContent = s.teachers_total.toLocaleString();
+        document.getElementById('stat-emails').textContent   = s.teachers_with_email.toLocaleString();
+      }
+    }
+  }
+
+  function fmtTime(seconds) {
+    const s = Math.round(seconds);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60), r = s % 60;
+    if (m < 60) return `${m}m ${r}s`;
+    const h = Math.floor(m / 60), rm = m % 60;
+    return `${h}h ${rm}m`;
+  }
+
   // Initial load
   loadTeachers();
+  // Resume progress bar if a scrape is already running
+  pollScrapeStatus();
 </script>
 </body>
 </html>

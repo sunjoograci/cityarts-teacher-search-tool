@@ -38,6 +38,28 @@ DIRECTORY_PATHS = [
     "/about-us/staff",
 ]
 
+# Paths to try when hunting for a district-level fine arts / visual arts department page
+ARTS_PATHS = [
+    "/fine-arts",
+    "/visual-arts",
+    "/programs/fine-arts",
+    "/programs/visual-arts",
+    "/arts",
+    "/departments/fine-arts",
+    "/departments/visual-arts",
+    "/curriculum/fine-arts",
+    "/fine-arts-department",
+    "/visual-arts-department",
+    "/domain/fine-arts",       # Schoolwires/Blackboard CMS
+    "/domain/visual-arts",
+    "/domain/fine_arts",
+    "/domain/visual_arts",
+    "/page/fine-arts",
+    "/page/visual-arts",
+    "/fine_arts",
+    "/visual_arts",
+]
+
 # Art-related keywords in job title (case-insensitive)
 ART_TITLE_KEYWORDS = re.compile(
     r"\b(art|visual arts?|studio|drawing|painting|ceramics?|sculpture|photography|printmaking|graphic design)\b",
@@ -57,6 +79,12 @@ SEND_MESSAGE_RE = re.compile(
 
 # Strip these button labels from scraped title text
 _TITLE_CLEANUP_RE = re.compile(r"\s*\bsend\s+(?:a\s+)?message\b.*$", re.IGNORECASE)
+
+# Link-text keywords that suggest a page is a staff/people directory
+DIRECTORY_LINK_RE = re.compile(
+    r"\b(staff|faculty|directory|teachers?|contact|personnel|employees?|team|people|campus\s+contacts?|our\s+staff|meet\s+(our\s+)?(staff|team|teachers?))\b",
+    re.IGNORECASE,
+)
 
 DELAY_BETWEEN_REQUESTS = 2.5  # seconds, used when robots.txt has no Crawl-delay
 
@@ -121,6 +149,25 @@ class RobotsCache:
         return float(delay) if delay else DELAY_BETWEEN_REQUESTS
 
 
+def _same_domain(href: str, base_url: str) -> bool:
+    """Return True if href is relative or shares the same hostname as base_url."""
+    if href.startswith("/"):
+        return True
+    try:
+        h = urllib.parse.urlparse(href).netloc.lstrip("www.")
+        b = urllib.parse.urlparse(base_url).netloc.lstrip("www.")
+        return bool(h) and h == b
+    except Exception:
+        return False
+
+
+def _resolve_href(href: str, base_url: str) -> str:
+    """Turn a relative or same-domain href into an absolute URL."""
+    if href.startswith("http"):
+        return href
+    return base_url.rstrip("/") + ("" if href.startswith("/") else "/") + href
+
+
 async def _find_directory_page(page: Page, base_url: str) -> str | None:
     """Try known paths and look for staff-related links on homepage."""
     for path in DIRECTORY_PATHS:
@@ -149,12 +196,11 @@ async def _find_directory_page(page: Page, base_url: str) -> str | None:
         )
         for link in links:
             href = link.get("href", "")
-            text = link.get("text", "").lower()
-            if any(kw in text for kw in ("staff", "faculty", "directory", "teachers", "contact")):
-                if href.startswith(base_url) or href.startswith("/"):
-                    full = href if href.startswith("http") else base_url.rstrip("/") + href
-                    log.info("  Found possible directory link: %s", full)
-                    return full
+            text = link.get("text", "").strip()
+            if DIRECTORY_LINK_RE.search(text) and _same_domain(href, base_url):
+                full = _resolve_href(href, base_url)
+                log.info("  Found possible directory link: %s (%r)", full, text)
+                return full
     except Exception as exc:
         log.debug("  Homepage link scan failed: %s", exc)
 
@@ -286,6 +332,122 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
     return unique
 
 
+async def _find_arts_page(page: Page, base_url: str) -> str | None:
+    """Search for a district-level fine arts / visual arts department page."""
+    for path in ARTS_PATHS:
+        candidate = base_url.rstrip("/") + path
+        try:
+            resp = await page.goto(candidate, timeout=12000, wait_until="domcontentloaded")
+            await asyncio.sleep(0.5)
+            if resp and resp.status < 400:
+                text = await page.inner_text("body")
+                if re.search(r"\b(art|visual arts?|fine arts?)\b", text, re.I) and (
+                    EMAIL_RE.search(text) or re.search(r"\b(teacher|instructor|staff|contact)\b", text, re.I)
+                ):
+                    log.info("  Found arts dept page at %s", candidate)
+                    return candidate
+        except PWTimeout:
+            pass
+        except Exception as exc:
+            log.debug("  Arts path %s: %s", path, exc)
+        await asyncio.sleep(0.3)
+
+    # Scan homepage navigation for fine arts / visual arts links
+    try:
+        await page.goto(base_url, timeout=15000, wait_until="domcontentloaded")
+        links = await page.eval_on_selector_all(
+            "a[href]",
+            "els => els.map(e => ({href: e.href, text: e.textContent}))",
+        )
+        for link in links:
+            href = link.get("href", "")
+            text = link.get("text", "").strip()
+            if re.search(r"\b(fine arts?|visual arts?)\b", text, re.I) and _same_domain(href, base_url):
+                full = _resolve_href(href, base_url)
+                log.info("  Found arts nav link: %s (%r)", full, text)
+                return full
+    except Exception as exc:
+        log.debug("  Arts nav scan failed: %s", exc)
+
+    return None
+
+
+async def _extract_staff_permissive(page: Page) -> list[StaffRecord]:
+    """Extract staff from an arts-specific page — no art-title keyword required.
+
+    Used when the page context (fine arts / visual arts dept) already implies
+    everyone listed is an art teacher.
+    """
+    records: list[StaffRecord] = []
+
+    # Strategy 1: All mailto links — find name in surrounding container text.
+    mailto_links = await page.eval_on_selector_all(
+        "a[href^='mailto:']",
+        """els => els.map(el => ({
+            email: el.href.replace('mailto:', ''),
+            text: (el.closest('tr,li,div,p,td') || el.parentElement).innerText
+        }))""",
+    )
+    for link in mailto_links:
+        email = link.get("email", "")
+        surrounding = link.get("text", "")
+        lines = [l.strip() for l in surrounding.splitlines() if l.strip()]
+        for line in lines:
+            if "@" in line:
+                continue
+            words = line.split()
+            if 2 <= len(words) <= 5 and len(line) <= 50:
+                records.append(StaffRecord(name=line, title="Visual Arts", email=email))
+                break
+
+    # Strategy 2: Cards / rows that have a name + email (email required).
+    if not records:
+        candidates = await page.eval_on_selector_all(
+            "tr, li, [class*='staff'], [class*='person'], [class*='card'], [class*='teacher'], [class*='faculty']",
+            """els => els.map(el => ({
+                text: el.innerText,
+                emails: [...el.querySelectorAll('a[href^="mailto:"]')].map(a => a.href.replace('mailto:', '')),
+                msgLink: (() => {
+                    const lnk = [...el.querySelectorAll('a[href]')].find(a =>
+                        /send\\s+a?\\s*message|contact\\s+me|email\\s+me|message\\s+me/i.test(a.textContent)
+                    );
+                    return lnk ? lnk.href : '';
+                })()
+            }))""",
+        )
+        for item in candidates:
+            raw = item.get("text", "").strip()
+            item_emails = item.get("emails", [])
+            msg_link = item.get("msgLink", "")
+            lines = [l.strip() for l in raw.splitlines() if l.strip()]
+            if not lines:
+                continue
+            name_candidate = lines[0]
+            words = name_candidate.split()
+            if len(words) < 2 or len(name_candidate) > 60 or "@" in name_candidate:
+                continue
+            email = item_emails[0] if item_emails else None
+            if not email:
+                found = EMAIL_RE.findall(raw)
+                email = found[0] if found else None
+            if not email and msg_link:
+                email = msg_link
+            if not email:
+                continue  # require contact info in permissive mode
+            title = _TITLE_CLEANUP_RE.sub("", lines[1]).strip() if len(lines) > 1 else "Visual Arts"
+            records.append(StaffRecord(name=name_candidate, title=title or "Visual Arts", email=email))
+
+    # Deduplicate by name
+    seen: set[str] = set()
+    unique: list[StaffRecord] = []
+    for r in records:
+        key = r.name.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+    return unique
+
+
 async def scrape_school(
     browser: Browser, school: dict, robots: RobotsCache | None = None
 ) -> tuple[list[StaffRecord], str]:
@@ -302,11 +464,24 @@ async def scrape_school(
     page = await context.new_page()
     try:
         dir_url = await _find_directory_page(page, url)
+        arts_page = False
         if not dir_url:
-            return [], "no_directory_found"
+            dir_url = await _find_arts_page(page, url)
+            if not dir_url:
+                return [], "no_directory_found"
+            arts_page = True
         await page.goto(dir_url, timeout=20000, wait_until="domcontentloaded")
         await asyncio.sleep(1.5)
-        records = await _extract_staff(page)
+        records = await (_extract_staff_permissive(page) if arts_page else _extract_staff(page))
+        # Even on a normal staff directory, fall back to arts page if we found no one
+        if not records and not arts_page:
+            arts_url = await _find_arts_page(page, url)
+            if arts_url:
+                await page.goto(arts_url, timeout=20000, wait_until="domcontentloaded")
+                await asyncio.sleep(1.5)
+                records = await _extract_staff_permissive(page)
+                if records:
+                    dir_url = arts_url
 
         # Follow pagination: detect the param name and max page, then hit every page.
         _PAGINATION_RE = re.compile(r"[?&](page_no|page|p)=(\d+)", re.IGNORECASE)
@@ -362,8 +537,32 @@ def save_staff(school_id: int, records: list[StaffRecord]) -> int:
     return saved
 
 
-async def run_scraper(states: list[str], limit: int | None = None) -> None:
+# Statuses that indicate the school was skipped/missed rather than truly scraped
+MISSED_STATUSES = ("no_directory_found", "timeout")
+
+
+async def run_scraper(
+    states: list[str],
+    limit: int | None = None,
+    rescrape_missed: bool = False,
+    on_progress=None,
+) -> None:
+    """Run the scraper.
+
+    on_progress(current, total, school_name, status) is called before and after
+    each school so callers can track progress in real time.
+    """
     with get_conn() as conn:
+        if rescrape_missed:
+            state_ph = ",".join("?" * len(states))
+            n = conn.execute(
+                f"""UPDATE schools SET scraped=0
+                    WHERE state IN ({state_ph})
+                      AND (scrape_status IN ({','.join('?' * len(MISSED_STATUSES))})
+                           OR scrape_status LIKE 'error:%')""",
+                list(states) + list(MISSED_STATUSES),
+            ).rowcount
+            log.info("Reset %d missed school(s) for re-scraping.", n)
         q = "SELECT id, school_name, website_url FROM schools WHERE scraped=0 AND state IN ({})".format(
             ",".join("?" * len(states))
         )
@@ -372,14 +571,17 @@ async def run_scraper(states: list[str], limit: int | None = None) -> None:
     if limit:
         rows = rows[:limit]
 
-    log.info("Scraping %d schools…", len(rows))
+    total = len(rows)
+    log.info("Scraping %d schools…", total)
     robots = RobotsCache()
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         for i, school in enumerate(rows, 1):
             school_dict = dict(school)
-            log.info("[%d/%d] %s (%s)", i, len(rows), school_dict["school_name"], school_dict["website_url"])
+            log.info("[%d/%d] %s (%s)", i, total, school_dict["school_name"], school_dict["website_url"])
+            if on_progress:
+                on_progress(i, total, school_dict["school_name"], "scraping")
             records, status = await scrape_school(browser, school_dict, robots)
             log.info("  → %d art teacher(s) found. Status: %s", len(records), status)
             saved = save_staff(school_dict["id"], records)
@@ -389,7 +591,9 @@ async def run_scraper(states: list[str], limit: int | None = None) -> None:
                     (status, school_dict["id"]),
                 )
             log.info("  → %d new staff records saved.", saved)
-            if i < len(rows):
+            if on_progress:
+                on_progress(i, total, school_dict["school_name"], status)
+            if i < total:
                 delay = robots.crawl_delay(school_dict["website_url"]) if school_dict["website_url"] else DELAY_BETWEEN_REQUESTS
                 time.sleep(delay)
         await browser.close()
@@ -400,8 +604,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape school staff directories.")
     parser.add_argument("--states", nargs="+", default=["TX", "KS"])
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--rescrape",
+        action="store_true",
+        help="Reset missed schools (no_directory_found, timeout, error:*) and scrape everything.",
+    )
     args = parser.parse_args()
-    asyncio.run(run_scraper([s.upper() for s in args.states], args.limit))
+    asyncio.run(run_scraper([s.upper() for s in args.states], args.limit, args.rescrape))
 
 
 if __name__ == "__main__":

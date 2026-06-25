@@ -45,6 +45,11 @@ def main() -> None:
     p_scrape = sub.add_parser("scrape", help="Scrape school staff directories.")
     p_scrape.add_argument("--states", nargs="+", default=["TX", "KS"])
     p_scrape.add_argument("--limit", type=int, default=None)
+    p_scrape.add_argument(
+        "--rescrape",
+        action="store_true",
+        help="Reset missed schools (no_directory_found, timeout, error:*) and scrape everything.",
+    )
 
     # enrich
     p_enrich = sub.add_parser("enrich", help="Enrich emails via Hunter.io / SMTP.")
@@ -75,7 +80,7 @@ def main() -> None:
     elif args.command == "scrape":
         import asyncio
         from src.scraper import run_scraper
-        asyncio.run(run_scraper([s.upper() for s in args.states], args.limit))
+        asyncio.run(run_scraper([s.upper() for s in args.states], args.limit, args.rescrape))
 
     elif args.command == "enrich":
         from src.enrich import enrich_staff
