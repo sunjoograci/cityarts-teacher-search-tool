@@ -7,16 +7,26 @@ Then open http://localhost:5000
 """
 import asyncio
 import io
+import os
 import sqlite3
 import threading
 import time
 from pathlib import Path
 
+import requests
 from flask import Flask, jsonify, render_template, request, send_file
 
 from src.db import DB_PATH, get_conn
 
 app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# Optional remote scraper service (needed on Vercel, which can't run
+# Playwright). If SCRAPER_SERVICE_URL is set, scrape requests are proxied
+# there instead of running locally.
+# ---------------------------------------------------------------------------
+_SCRAPER_SERVICE_URL = os.environ.get("SCRAPER_SERVICE_URL", "").rstrip("/")
+_SCRAPE_SHARED_SECRET = os.environ.get("SCRAPE_SHARED_SECRET")
 
 # ---------------------------------------------------------------------------
 # Background scrape job state
@@ -55,13 +65,25 @@ def _run_scrape_thread(states: list[str], rescrape: bool) -> None:
         _scrape_state["finished_at"] = time.time()
 
 
-_ON_VERCEL = bool(__import__("os").environ.get("VERCEL"))
+_ON_VERCEL = bool(os.environ.get("VERCEL"))
+
+
+def _proxy_headers() -> dict:
+    return {"X-Scrape-Secret": _SCRAPE_SHARED_SECRET} if _SCRAPE_SHARED_SECRET else {}
 
 
 @app.route("/api/scrape/start", methods=["POST"])
 def api_scrape_start():
+    if _SCRAPER_SERVICE_URL:
+        resp = requests.post(
+            f"{_SCRAPER_SERVICE_URL}/scrape/start",
+            json=request.get_json(silent=True) or {},
+            headers=_proxy_headers(),
+            timeout=15,
+        )
+        return jsonify(resp.json()), resp.status_code
     if _ON_VERCEL:
-        return jsonify({"error": "Scraping must be run locally — Vercel is read-only. Run: python main.py scrape --states TX"}), 403
+        return jsonify({"error": "Scraping isn't configured yet — set SCRAPER_SERVICE_URL to point at a deployed scraper service."}), 403
     with _scrape_lock:
         if _scrape_state["running"]:
             return jsonify({"error": "A scrape is already running."}), 409
@@ -86,6 +108,13 @@ def api_scrape_start():
 
 @app.route("/api/scrape/status")
 def api_scrape_status():
+    if _SCRAPER_SERVICE_URL:
+        resp = requests.get(
+            f"{_SCRAPER_SERVICE_URL}/scrape/status",
+            headers=_proxy_headers(),
+            timeout=15,
+        )
+        return jsonify(resp.json()), resp.status_code
     s = dict(_scrape_state)
     elapsed = None
     eta = None

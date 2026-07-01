@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: cityarts-scraper-service
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt && playwright install --with-deps chromium"
+    startCommand: "gunicorn scrape_service:app --bind 0.0.0.0:$PORT --timeout 600"
+    envVars:
+      - key: SCRAPE_SHARED_SECRET
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: GIT_USER_NAME
+        value: cityarts-scraper-bot
+      - key: GIT_USER_EMAIL
+        value: scraper-bot@users.noreply.github.com
