@@ -6,6 +6,8 @@ services:
     buildCommand: "pip install -r requirements.txt && playwright install --with-deps chromium"
     startCommand: "gunicorn scrape_service:app --bind 0.0.0.0:$PORT --timeout 600"
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.6
       - key: SCRAPE_SHARED_SECRET
         sync: false
       - key: GITHUB_TOKEN
