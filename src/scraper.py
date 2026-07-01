@@ -9,12 +9,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import re
 import time
 import urllib.parse
 import urllib.robotparser
 from typing import NamedTuple
 
+import aiohttp
 from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PWTimeout
 
 from .db import get_conn
@@ -86,7 +88,20 @@ DIRECTORY_LINK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Keyword checks used while probing candidate directory/arts paths over plain HTTP
+STAFF_KEYWORD_RE = re.compile(r"\b(teacher|instructor|staff|faculty)\b", re.IGNORECASE)
+ARTS_KEYWORD_RE = re.compile(r"\b(art|visual arts?|fine arts?)\b", re.IGNORECASE)
+CONTACT_KEYWORD_RE = re.compile(r"\b(teacher|instructor|staff|contact)\b", re.IGNORECASE)
+
 DELAY_BETWEEN_REQUESTS = 2.5  # seconds, used when robots.txt has no Crawl-delay
+
+# How many schools to scrape concurrently. Different schools are (almost
+# always) different domains, so robots.txt crawl-delay — which is per-domain —
+# doesn't require them to run one-at-a-time. Override with SCRAPE_CONCURRENCY.
+DEFAULT_CONCURRENCY = int(os.environ.get("SCRAPE_CONCURRENCY", "4"))
+
+# Timeout for the lightweight HTTP probes used to discover directory pages
+PROBE_TIMEOUT = 6.0
 
 SCRAPER_UA = "Mozilla/5.0 (compatible; CityArts-TeacherFinder/1.0; +https://cityarts.org)"
 
@@ -108,41 +123,55 @@ def _is_art_teacher(title: str) -> bool:
 
 
 class RobotsCache:
-    """Per-domain robots.txt cache. Fetches once per domain, then serves from memory."""
+    """Per-domain robots.txt cache. Fetches once per domain, then serves from memory.
+
+    Fetches are done over the shared aiohttp session so a slow/unresponsive
+    robots.txt on one domain can't stall scraping of other domains running
+    concurrently (a plain blocking urllib call would freeze the whole event
+    loop, not just the task that's waiting on it).
+    """
 
     def __init__(self) -> None:
         self._cache: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def _domain(self, url: str) -> str:
         p = urllib.parse.urlparse(url)
         return f"{p.scheme}://{p.netloc}"
 
-    def _get(self, url: str) -> urllib.robotparser.RobotFileParser | None:
+    async def _get(
+        self, url: str, session: aiohttp.ClientSession
+    ) -> urllib.robotparser.RobotFileParser | None:
         domain = self._domain(url)
-        if domain not in self._cache:
+        if domain in self._cache:
+            return self._cache[domain]
+        lock = self._locks.setdefault(domain, asyncio.Lock())
+        async with lock:
+            if domain in self._cache:  # someone else fetched it while we waited
+                return self._cache[domain]
             rp = urllib.robotparser.RobotFileParser()
             robots_url = f"{domain}/robots.txt"
             try:
-                req = urllib.request.Request(
-                    robots_url, headers={"User-Agent": SCRAPER_UA}
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                async with session.get(
+                    robots_url, timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
                     if resp.status == 200:
-                        rp.parse(resp.read().decode("utf-8", errors="replace").splitlines())
+                        text = await resp.text(errors="replace")
+                        rp.parse(text.splitlines())
                     # 404 → no robots.txt → allow all (leave rp empty)
             except Exception:
                 pass  # network error or non-200 → allow all
             self._cache[domain] = rp
         return self._cache[domain]
 
-    def can_fetch(self, url: str) -> bool:
-        rp = self._get(url)
+    async def can_fetch(self, url: str, session: aiohttp.ClientSession) -> bool:
+        rp = await self._get(url, session)
         if rp is None:
             return True
         return rp.can_fetch(SCRAPER_UA, url)
 
-    def crawl_delay(self, url: str) -> float:
-        rp = self._get(url)
+    async def crawl_delay(self, url: str, session: aiohttp.ClientSession) -> float:
+        rp = await self._get(url, session)
         if rp is None:
             return DELAY_BETWEEN_REQUESTS
         delay = rp.crawl_delay(SCRAPER_UA) or rp.crawl_delay("*")
@@ -168,26 +197,57 @@ def _resolve_href(href: str, base_url: str) -> str:
     return base_url.rstrip("/") + ("" if href.startswith("/") else "/") + href
 
 
-async def _find_directory_page(page: Page, base_url: str) -> str | None:
-    """Try known paths and look for staff-related links on homepage."""
-    for path in DIRECTORY_PATHS:
-        candidate = base_url.rstrip("/") + path
-        try:
-            resp = await page.goto(candidate, timeout=12000, wait_until="domcontentloaded")
-            await asyncio.sleep(0.5)
-            if resp and resp.status < 400:
-                text = await page.inner_text("body")
-                # Check this page has actual staff names (look for email or name-like patterns)
-                if EMAIL_RE.search(text) or re.search(r"\b(teacher|instructor|staff|faculty)\b", text, re.I):
-                    log.info("  Found directory at %s", candidate)
-                    return candidate
-        except PWTimeout:
-            pass
-        except Exception as exc:
-            log.debug("  Path %s: %s", path, exc)
-        await asyncio.sleep(0.3)
+async def _probe_paths(
+    session: aiohttp.ClientSession,
+    base_url: str,
+    paths: list[str],
+    match_fn,
+    robots: RobotsCache,
+) -> str | None:
+    """Concurrently GET every candidate path and return the first (by priority
+    order in `paths`, not order of completion) whose body satisfies match_fn.
 
-    # Fall back: look for links on homepage
+    This replaces what used to be up to a dozen-plus sequential full-browser
+    Playwright navigations with one round of plain HTTP requests, which is
+    where nearly all of the scrape time per school was going.
+    """
+    async def check(path: str) -> str | None:
+        candidate = base_url.rstrip("/") + path
+        if not await robots.can_fetch(candidate, session):
+            return None
+        try:
+            async with session.get(
+                candidate, timeout=aiohttp.ClientTimeout(total=PROBE_TIMEOUT), allow_redirects=True
+            ) as resp:
+                if resp.status >= 400:
+                    return None
+                text = await resp.text(errors="replace")
+                if match_fn(text):
+                    return candidate
+        except Exception:
+            return None
+        return None
+
+    results = await asyncio.gather(*(check(p) for p in paths))
+    return next((r for r in results if r), None)
+
+
+async def _find_directory_page(
+    page: Page, base_url: str, session: aiohttp.ClientSession, robots: RobotsCache
+) -> str | None:
+    """Try known paths (concurrently, over plain HTTP) and look for
+    staff-related links on the homepage as a last resort."""
+    hit = await _probe_paths(
+        session, base_url, DIRECTORY_PATHS,
+        lambda text: bool(EMAIL_RE.search(text) or STAFF_KEYWORD_RE.search(text)),
+        robots,
+    )
+    if hit:
+        log.info("  Found directory at %s", hit)
+        return hit
+
+    # Fall back: look for links on homepage (needs a real browser — some nav
+    # menus are JS-rendered — but this is a single navigation, not a loop).
     try:
         await page.goto(base_url, timeout=15000, wait_until="domcontentloaded")
         links = await page.eval_on_selector_all(
@@ -332,25 +392,20 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
     return unique
 
 
-async def _find_arts_page(page: Page, base_url: str) -> str | None:
+async def _find_arts_page(
+    page: Page, base_url: str, session: aiohttp.ClientSession, robots: RobotsCache
+) -> str | None:
     """Search for a district-level fine arts / visual arts department page."""
-    for path in ARTS_PATHS:
-        candidate = base_url.rstrip("/") + path
-        try:
-            resp = await page.goto(candidate, timeout=12000, wait_until="domcontentloaded")
-            await asyncio.sleep(0.5)
-            if resp and resp.status < 400:
-                text = await page.inner_text("body")
-                if re.search(r"\b(art|visual arts?|fine arts?)\b", text, re.I) and (
-                    EMAIL_RE.search(text) or re.search(r"\b(teacher|instructor|staff|contact)\b", text, re.I)
-                ):
-                    log.info("  Found arts dept page at %s", candidate)
-                    return candidate
-        except PWTimeout:
-            pass
-        except Exception as exc:
-            log.debug("  Arts path %s: %s", path, exc)
-        await asyncio.sleep(0.3)
+    hit = await _probe_paths(
+        session, base_url, ARTS_PATHS,
+        lambda text: bool(ARTS_KEYWORD_RE.search(text) and (
+            EMAIL_RE.search(text) or CONTACT_KEYWORD_RE.search(text)
+        )),
+        robots,
+    )
+    if hit:
+        log.info("  Found arts dept page at %s", hit)
+        return hit
 
     # Scan homepage navigation for fine arts / visual arts links
     try:
@@ -449,7 +504,10 @@ async def _extract_staff_permissive(page: Page) -> list[StaffRecord]:
 
 
 async def scrape_school(
-    browser: Browser, school: dict, robots: RobotsCache | None = None
+    browser: Browser,
+    school: dict,
+    robots: RobotsCache | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> tuple[list[StaffRecord], str]:
     """Scrape one school. Returns (records, status)."""
     url = school["website_url"]
@@ -457,16 +515,23 @@ async def scrape_school(
         return [], "no_url"
     if robots is None:
         robots = RobotsCache()
-    if not robots.can_fetch(url):
+
+    own_session = session is None
+    if own_session:
+        session = aiohttp.ClientSession(headers={"User-Agent": SCRAPER_UA})
+
+    if not await robots.can_fetch(url, session):
+        if own_session:
+            await session.close()
         return [], "robots_blocked"
 
     context = await browser.new_context(user_agent=SCRAPER_UA)
     page = await context.new_page()
     try:
-        dir_url = await _find_directory_page(page, url)
+        dir_url = await _find_directory_page(page, url, session, robots)
         arts_page = False
         if not dir_url:
-            dir_url = await _find_arts_page(page, url)
+            dir_url = await _find_arts_page(page, url, session, robots)
             if not dir_url:
                 return [], "no_directory_found"
             arts_page = True
@@ -475,7 +540,7 @@ async def scrape_school(
         records = await (_extract_staff_permissive(page) if arts_page else _extract_staff(page))
         # Even on a normal staff directory, fall back to arts page if we found no one
         if not records and not arts_page:
-            arts_url = await _find_arts_page(page, url)
+            arts_url = await _find_arts_page(page, url, session, robots)
             if arts_url:
                 await page.goto(arts_url, timeout=20000, wait_until="domcontentloaded")
                 await asyncio.sleep(1.5)
@@ -519,6 +584,8 @@ async def scrape_school(
         return [], f"error: {exc}"
     finally:
         await context.close()
+        if own_session:
+            await session.close()
 
 
 def save_staff(school_id: int, records: list[StaffRecord]) -> int:
@@ -546,12 +613,40 @@ async def run_scraper(
     limit: int | None = None,
     rescrape_missed: bool = False,
     on_progress=None,
+    should_stop=None,
+    concurrency: int | None = None,
 ) -> None:
     """Run the scraper.
 
-    on_progress(current, total, school_name, status) is called before and after
-    each school so callers can track progress in real time.
+    Schools are scraped concurrently (bounded by `concurrency`, default
+    SCRAPE_CONCURRENCY env var or 4). Since each school is almost always a
+    different domain, and robots.txt crawl-delay is a per-domain rule, this
+    doesn't violate crawl-delay — schools on the same domain are still
+    spaced out by that domain's delay, just not schools on different domains.
+
+    on_progress(current, total, school_name, status) is called once a school
+    starts and again once it finishes, so callers can track progress in real
+    time. Because schools run concurrently, calls may arrive out of the
+    original row order.
+
+    should_stop() is polled before each school starts; if it returns True,
+    schools not yet started are skipped (in-flight ones finish normally).
     """
+    with get_conn() as conn:
+        state_ph_check = ",".join("?" * len(states))
+        ingested_states = {
+            row["state"]
+            for row in conn.execute(
+                f"SELECT DISTINCT state FROM schools WHERE state IN ({state_ph_check})",
+                states,
+            ).fetchall()
+        }
+    missing_states = [s for s in states if s not in ingested_states]
+    if missing_states:
+        from .ingest import ingest_schools
+        log.info("No schools ingested yet for %s — ingesting from NCES data now.", missing_states)
+        ingest_schools(missing_states)
+
     with get_conn() as conn:
         if rescrape_missed:
             state_ph = ",".join("?" * len(states))
@@ -572,31 +667,65 @@ async def run_scraper(
         rows = rows[:limit]
 
     total = len(rows)
-    log.info("Scraping %d schools…", total)
+    if concurrency is None:
+        concurrency = DEFAULT_CONCURRENCY
+    log.info("Scraping %d schools… (concurrency=%d)", total, concurrency)
     robots = RobotsCache()
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        for i, school in enumerate(rows, 1):
-            school_dict = dict(school)
-            log.info("[%d/%d] %s (%s)", i, total, school_dict["school_name"], school_dict["website_url"])
-            if on_progress:
-                on_progress(i, total, school_dict["school_name"], "scraping")
-            records, status = await scrape_school(browser, school_dict, robots)
-            log.info("  → %d art teacher(s) found. Status: %s", len(records), status)
-            saved = save_staff(school_dict["id"], records)
-            with get_conn() as conn:
-                conn.execute(
-                    "UPDATE schools SET scraped=1, scrape_status=? WHERE id=?",
-                    (status, school_dict["id"]),
-                )
-            log.info("  → %d new staff records saved.", saved)
-            if on_progress:
-                on_progress(i, total, school_dict["school_name"], status)
-            if i < total:
-                delay = robots.crawl_delay(school_dict["website_url"]) if school_dict["website_url"] else DELAY_BETWEEN_REQUESTS
-                time.sleep(delay)
-        await browser.close()
+    completed = 0
+    domain_locks: dict[str, asyncio.Lock] = {}
+    domain_last_start: dict[str, float] = {}
+
+    def _domain(url: str) -> str:
+        return urllib.parse.urlparse(url).netloc.lower()
+
+    async def _throttle(url: str) -> None:
+        """Enforce this domain's crawl-delay against its own last request,
+        without blocking requests to other domains."""
+        domain = _domain(url)
+        lock = domain_locks.setdefault(domain, asyncio.Lock())
+        async with lock:
+            delay = await robots.crawl_delay(url, session)
+            last = domain_last_start.get(domain)
+            if last is not None:
+                wait = delay - (time.monotonic() - last)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+            domain_last_start[domain] = time.monotonic()
+
+    sem = asyncio.Semaphore(concurrency)
+
+    async with aiohttp.ClientSession(headers={"User-Agent": SCRAPER_UA}) as session:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+
+            async def worker(school_row) -> None:
+                nonlocal completed
+                school_dict = dict(school_row)
+                async with sem:
+                    if should_stop and should_stop():
+                        return
+                    if school_dict["website_url"]:
+                        await _throttle(school_dict["website_url"])
+                    log.info("[%d/%d] %s (%s)", completed + 1, total,
+                             school_dict["school_name"], school_dict["website_url"])
+                    if on_progress:
+                        on_progress(completed + 1, total, school_dict["school_name"], "scraping")
+                    records, status = await scrape_school(browser, school_dict, robots, session)
+                    log.info("  → %d art teacher(s) found. Status: %s", len(records), status)
+                    saved = save_staff(school_dict["id"], records)
+                    with get_conn() as conn:
+                        conn.execute(
+                            "UPDATE schools SET scraped=1, scrape_status=? WHERE id=?",
+                            (status, school_dict["id"]),
+                        )
+                    log.info("  → %d new staff records saved.", saved)
+                    completed += 1
+                    if on_progress:
+                        on_progress(completed, total, school_dict["school_name"], status)
+
+            await asyncio.gather(*(worker(row) for row in rows))
+            await browser.close()
 
 
 def main() -> None:

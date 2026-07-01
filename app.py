@@ -44,6 +44,7 @@ _scrape_state: dict = {
     "error": None,
     "states": [],
     "rescrape": False,
+    "stop_requested": False,
 }
 
 
@@ -56,8 +57,13 @@ def _run_scrape_thread(states: list[str], rescrape: bool) -> None:
         _scrape_state["current_school"] = school_name
         _scrape_state["last_status"] = status
 
+    def should_stop():
+        return _scrape_state["stop_requested"]
+
     try:
-        asyncio.run(run_scraper(states, rescrape_missed=rescrape, on_progress=on_progress))
+        asyncio.run(run_scraper(
+            states, rescrape_missed=rescrape, on_progress=on_progress, should_stop=should_stop,
+        ))
     except Exception as exc:
         _scrape_state["error"] = str(exc)
     finally:
@@ -101,8 +107,25 @@ def api_scrape_start():
             "error": None,
             "states": states,
             "rescrape": rescrape,
+            "stop_requested": False,
         })
     threading.Thread(target=_run_scrape_thread, args=(states, rescrape), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/scrape/stop", methods=["POST"])
+def api_scrape_stop():
+    if _SCRAPER_SERVICE_URL:
+        resp = requests.post(
+            f"{_SCRAPER_SERVICE_URL}/scrape/stop",
+            headers=_proxy_headers(),
+            timeout=15,
+        )
+        return jsonify(resp.json()), resp.status_code
+    with _scrape_lock:
+        if not _scrape_state["running"]:
+            return jsonify({"error": "No scrape is running."}), 409
+        _scrape_state["stop_requested"] = True
     return jsonify({"ok": True})
 
 

@@ -16,3 +16,5 @@ services:
         value: cityarts-scraper-bot
       - key: GIT_USER_EMAIL
         value: scraper-bot@users.noreply.github.com
+      - key: SCRAPE_CONCURRENCY
+        value: "4"

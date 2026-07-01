@@ -24,6 +24,7 @@ import re
 import time
 from typing import NamedTuple
 
+import aiohttp
 from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PWTimeout
 
 from .db import get_conn
@@ -230,6 +231,7 @@ async def _check_school_exhaustively(
     school: dict,
     teachers_no_contact: list[dict],
     robots: RobotsCache,
+    session: aiohttp.ClientSession,
 ) -> dict[int, ContactResult]:
     """
     Visit every page of the school's staff directory and exhaustively find
@@ -238,7 +240,7 @@ async def _check_school_exhaustively(
     url = school["website_url"]
     if not url:
         return {}
-    if not robots.can_fetch(url):
+    if not await robots.can_fetch(url, session):
         log.info("  robots.txt blocked: %s", url)
         return {}
 
@@ -250,7 +252,7 @@ async def _check_school_exhaustively(
     id_by_norm: dict[str, int] = {_normalize(t["teacher_name"]): t["id"] for t in teachers_no_contact}
 
     try:
-        dir_url = await _find_directory_page(page, url)
+        dir_url = await _find_directory_page(page, url, session, robots)
         if not dir_url:
             log.info("  No directory page found for %s", url)
             return {}
@@ -348,33 +350,34 @@ async def run_contact_form_check(
     robots = RobotsCache()
     total_updated = 0
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        for i, (school_id, school) in enumerate(schools.items(), 1):
-            teachers = teachers_by_school[school_id]
-            log.info(
-                "[%d/%d] %s (%s) — %d teacher(s) to resolve",
-                i, len(schools),
-                school["school_name"], school["website_url"],
-                len(teachers),
-            )
-            updates = await _check_school_exhaustively(browser, school, teachers, robots)
-            if updates:
-                with get_conn() as conn:
-                    for staff_id, result in updates.items():
-                        conn.execute(
-                            "UPDATE staff SET email=?, resolution_method=? WHERE id=?",
-                            (result.value, result.method, staff_id),
-                        )
-                log.info("  → Updated %d record(s).", len(updates))
-                total_updated += len(updates)
-            else:
-                log.info("  → No contact info found.")
+    async with aiohttp.ClientSession(headers={"User-Agent": SCRAPER_UA}) as session:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            for i, (school_id, school) in enumerate(schools.items(), 1):
+                teachers = teachers_by_school[school_id]
+                log.info(
+                    "[%d/%d] %s (%s) — %d teacher(s) to resolve",
+                    i, len(schools),
+                    school["school_name"], school["website_url"],
+                    len(teachers),
+                )
+                updates = await _check_school_exhaustively(browser, school, teachers, robots, session)
+                if updates:
+                    with get_conn() as conn:
+                        for staff_id, result in updates.items():
+                            conn.execute(
+                                "UPDATE staff SET email=?, resolution_method=? WHERE id=?",
+                                (result.value, result.method, staff_id),
+                            )
+                    log.info("  → Updated %d record(s).", len(updates))
+                    total_updated += len(updates)
+                else:
+                    log.info("  → No contact info found.")
 
-            if i < len(schools) and school["website_url"]:
-                time.sleep(robots.crawl_delay(school["website_url"]))
+                if i < len(schools) and school["website_url"]:
+                    time.sleep(await robots.crawl_delay(school["website_url"], session))
 
-        await browser.close()
+            await browser.close()
 
     log.info("Done. %d staff record(s) updated.", total_updated)
 

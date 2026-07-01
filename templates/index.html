@@ -220,6 +220,8 @@
     }
     .btn-scrape:hover:not(:disabled) { background: #14304e; }
     .btn-scrape:disabled { opacity: .5; cursor: default; }
+    .btn-stop { background: #b71c1c; margin-left: 10px; }
+    .btn-stop:hover:not(:disabled) { background: #921616; }
 
     .progress-section { margin-top: 28px; }
     .progress-header {
@@ -300,11 +302,6 @@
       <input type="search" id="teacher-search" placeholder="Search name, school, city…" oninput="debounce(loadTeachers)">
       <select id="teacher-state" onchange="loadTeachers()">
         <option value="">All States</option>
-        <option value="KS">Kansas</option>
-        <option value="TX">Texas</option>
-        <option value="NY">New York</option>
-        <option value="CA">California</option>
-        <option value="IL">Illinois</option>
       </select>
       <label class="checkbox">
         <input type="checkbox" id="teacher-only-email" onchange="loadTeachers()">
@@ -323,11 +320,6 @@
       <input type="search" id="school-search" placeholder="Search school, city, district…" oninput="debounce(loadSchools)">
       <select id="school-state" onchange="loadSchools()">
         <option value="">All States</option>
-        <option value="KS">Kansas</option>
-        <option value="TX">Texas</option>
-        <option value="NY">New York</option>
-        <option value="CA">California</option>
-        <option value="IL">Illinois</option>
       </select>
       <label class="checkbox">
         <input type="checkbox" id="school-only-url" onchange="loadSchools()">
@@ -344,13 +336,7 @@
   <div class="panel" id="panel-scrape" style="display:none">
     <div class="scrape-form">
       <h3>Select states to scrape</h3>
-      <div class="state-grid">
-        <label class="state-chip"><input type="checkbox" name="scrape-state" value="TX" checked> Texas</label>
-        <label class="state-chip"><input type="checkbox" name="scrape-state" value="KS"> Kansas</label>
-        <label class="state-chip"><input type="checkbox" name="scrape-state" value="NY"> New York</label>
-        <label class="state-chip"><input type="checkbox" name="scrape-state" value="CA"> California</label>
-        <label class="state-chip"><input type="checkbox" name="scrape-state" value="IL"> Illinois</label>
-      </div>
+      <div class="state-grid" id="scrape-state-grid"></div>
       <div class="scrape-options">
         <label>
           <input type="checkbox" id="scrape-rescrape">
@@ -358,6 +344,7 @@
         </label>
       </div>
       <button class="btn-scrape" id="scrape-btn" onclick="startScrape()">Start Scraping</button>
+      <button class="btn-scrape btn-stop" id="stop-btn" onclick="stopScrape()" style="display:none">Stop Scraping</button>
     </div>
 
     <div class="progress-section" id="scrape-progress" style="display:none">
@@ -381,6 +368,33 @@
 </div>
 
 <script>
+  const US_STATES = [
+    ['AL','Alabama'],['AK','Alaska'],['AZ','Arizona'],['AR','Arkansas'],['CA','California'],
+    ['CO','Colorado'],['CT','Connecticut'],['DE','Delaware'],['DC','District of Columbia'],
+    ['FL','Florida'],['GA','Georgia'],['HI','Hawaii'],['ID','Idaho'],['IL','Illinois'],
+    ['IN','Indiana'],['IA','Iowa'],['KS','Kansas'],['KY','Kentucky'],['LA','Louisiana'],
+    ['ME','Maine'],['MD','Maryland'],['MA','Massachusetts'],['MI','Michigan'],['MN','Minnesota'],
+    ['MS','Mississippi'],['MO','Missouri'],['MT','Montana'],['NE','Nebraska'],['NV','Nevada'],
+    ['NH','New Hampshire'],['NJ','New Jersey'],['NM','New Mexico'],['NY','New York'],
+    ['NC','North Carolina'],['ND','North Dakota'],['OH','Ohio'],['OK','Oklahoma'],['OR','Oregon'],
+    ['PA','Pennsylvania'],['RI','Rhode Island'],['SC','South Carolina'],['SD','South Dakota'],
+    ['TN','Tennessee'],['TX','Texas'],['UT','Utah'],['VT','Vermont'],['VA','Virginia'],
+    ['WA','Washington'],['WV','West Virginia'],['WI','Wisconsin'],['WY','Wyoming'],
+  ];
+
+  function populateStatePickers() {
+    const teacherSel = document.getElementById('teacher-state');
+    const schoolSel = document.getElementById('school-state');
+    const grid = document.getElementById('scrape-state-grid');
+    for (const [abbr, name] of US_STATES) {
+      teacherSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
+      schoolSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
+      grid.insertAdjacentHTML('beforeend',
+        `<label class="state-chip"><input type="checkbox" name="scrape-state" value="${abbr}" ${abbr === 'TX' ? 'checked' : ''}> ${name}</label>`);
+    }
+  }
+  populateStatePickers();
+
   let teacherPage = 1, schoolPage = 1;
   let debounceTimer = null;
 
@@ -558,7 +572,27 @@
     document.getElementById('scrape-result').innerHTML = '';
     document.getElementById('scrape-btn').disabled = true;
     document.getElementById('scrape-btn').textContent = 'Scraping…';
+    document.getElementById('stop-btn').style.display = '';
+    document.getElementById('stop-btn').disabled = false;
+    document.getElementById('stop-btn').textContent = 'Stop Scraping';
     startScrapePoller();
+  }
+
+  async function stopScrape() {
+    document.getElementById('stop-btn').disabled = true;
+    document.getElementById('stop-btn').textContent = 'Stopping…';
+    try {
+      const res = await fetch('/api/scrape/stop', { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.error || 'Failed to stop scrape.');
+        document.getElementById('stop-btn').disabled = false;
+        document.getElementById('stop-btn').textContent = 'Stop Scraping';
+      }
+    } catch {
+      document.getElementById('stop-btn').disabled = false;
+      document.getElementById('stop-btn').textContent = 'Stop Scraping';
+    }
   }
 
   function startScrapePoller() {
@@ -584,6 +618,13 @@
       document.getElementById('progress-label').textContent = running ? 'Scraping…' : 'Done';
     }
 
+    if (running) {
+      document.getElementById('scrape-progress').style.display = '';
+      document.getElementById('scrape-btn').disabled = true;
+      document.getElementById('scrape-btn').textContent = 'Scraping…';
+      document.getElementById('stop-btn').style.display = '';
+    }
+
     document.getElementById('prog-elapsed').textContent = elapsed ? fmtTime(elapsed) : '—';
     document.getElementById('prog-eta').textContent     = eta     ? fmtTime(eta)     : (running ? 'calculating…' : '—');
 
@@ -596,6 +637,7 @@
       clearInterval(scrapePoller);
       document.getElementById('scrape-btn').disabled = false;
       document.getElementById('scrape-btn').textContent = 'Start Scraping';
+      document.getElementById('stop-btn').style.display = 'none';
       if (finished_at) {
         const resultEl = document.getElementById('scrape-result');
         if (error) {
