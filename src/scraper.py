@@ -233,18 +233,38 @@ async def _probe_paths(
 
 
 async def _find_directory_page(
-    page: Page, base_url: str, session: aiohttp.ClientSession, robots: RobotsCache
-) -> str | None:
+    page: Page,
+    base_url: str,
+    session: aiohttp.ClientSession,
+    robots: RobotsCache,
+    cached_path: str | None = None,
+) -> tuple[str | None, str | None]:
     """Try known paths (concurrently, over plain HTTP) and look for
-    staff-related links on the homepage as a last resort."""
-    hit = await _probe_paths(
-        session, base_url, DIRECTORY_PATHS,
-        lambda text: bool(EMAIL_RE.search(text) or STAFF_KEYWORD_RE.search(text)),
-        robots,
-    )
+    staff-related links on the homepage as a last resort.
+
+    `cached_path` is a relative path (e.g. "/staff") that already worked for
+    another school in the same district — districts overwhelmingly run every
+    school's site on the same CMS/template, so it's tried first, alone,
+    before the full candidate list.
+
+    Returns (found_url, matched_relative_path). matched_relative_path is only
+    set when the hit came from a known template path (cached or from
+    DIRECTORY_PATHS) — i.e. something reusable for sibling schools in the
+    same district — and is None when found via the homepage link scan
+    (site-specific, not a generic template path).
+    """
+    match_fn = lambda text: bool(EMAIL_RE.search(text) or STAFF_KEYWORD_RE.search(text))
+
+    if cached_path:
+        hit = await _probe_paths(session, base_url, [cached_path], match_fn, robots)
+        if hit:
+            log.info("  Found directory at %s (district cache hit: %s)", hit, cached_path)
+            return hit, cached_path
+
+    hit = await _probe_paths(session, base_url, DIRECTORY_PATHS, match_fn, robots)
     if hit:
         log.info("  Found directory at %s", hit)
-        return hit
+        return hit, hit[len(base_url.rstrip("/")):]
 
     # Fall back: look for links on homepage (needs a real browser — some nav
     # menus are JS-rendered — but this is a single navigation, not a loop).
@@ -260,11 +280,11 @@ async def _find_directory_page(
             if DIRECTORY_LINK_RE.search(text) and _same_domain(href, base_url):
                 full = _resolve_href(href, base_url)
                 log.info("  Found possible directory link: %s (%r)", full, text)
-                return full
+                return full, None
     except Exception as exc:
         log.debug("  Homepage link scan failed: %s", exc)
 
-    return None
+    return None, None
 
 
 async def _extract_staff(page: Page) -> list[StaffRecord]:
@@ -393,19 +413,30 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
 
 
 async def _find_arts_page(
-    page: Page, base_url: str, session: aiohttp.ClientSession, robots: RobotsCache
-) -> str | None:
-    """Search for a district-level fine arts / visual arts department page."""
-    hit = await _probe_paths(
-        session, base_url, ARTS_PATHS,
-        lambda text: bool(ARTS_KEYWORD_RE.search(text) and (
-            EMAIL_RE.search(text) or CONTACT_KEYWORD_RE.search(text)
-        )),
-        robots,
-    )
+    page: Page,
+    base_url: str,
+    session: aiohttp.ClientSession,
+    robots: RobotsCache,
+    cached_path: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Search for a district-level fine arts / visual arts department page.
+
+    Same district-cache/return-shape contract as `_find_directory_page`.
+    """
+    match_fn = lambda text: bool(ARTS_KEYWORD_RE.search(text) and (
+        EMAIL_RE.search(text) or CONTACT_KEYWORD_RE.search(text)
+    ))
+
+    if cached_path:
+        hit = await _probe_paths(session, base_url, [cached_path], match_fn, robots)
+        if hit:
+            log.info("  Found arts dept page at %s (district cache hit: %s)", hit, cached_path)
+            return hit, cached_path
+
+    hit = await _probe_paths(session, base_url, ARTS_PATHS, match_fn, robots)
     if hit:
         log.info("  Found arts dept page at %s", hit)
-        return hit
+        return hit, hit[len(base_url.rstrip("/")):]
 
     # Scan homepage navigation for fine arts / visual arts links
     try:
@@ -420,11 +451,11 @@ async def _find_arts_page(
             if re.search(r"\b(fine arts?|visual arts?)\b", text, re.I) and _same_domain(href, base_url):
                 full = _resolve_href(href, base_url)
                 log.info("  Found arts nav link: %s (%r)", full, text)
-                return full
+                return full, None
     except Exception as exc:
         log.debug("  Arts nav scan failed: %s", exc)
 
-    return None
+    return None, None
 
 
 async def _extract_staff_permissive(page: Page) -> list[StaffRecord]:
@@ -508,8 +539,18 @@ async def scrape_school(
     school: dict,
     robots: RobotsCache | None = None,
     session: aiohttp.ClientSession | None = None,
+    district_dir_cache: dict[str, str] | None = None,
+    district_arts_cache: dict[str, str] | None = None,
 ) -> tuple[list[StaffRecord], str]:
-    """Scrape one school. Returns (records, status)."""
+    """Scrape one school. Returns (records, status).
+
+    district_dir_cache / district_arts_cache map district_name -> a relative
+    path (e.g. "/staff") that already worked for a sibling school in that
+    district. Districts overwhelmingly run every school's site on the same
+    CMS/template, so once the pattern is learned from the first school, later
+    schools in the same district try that one path first instead of the full
+    candidate list.
+    """
     url = school["website_url"]
     if not url:
         return [], "no_url"
@@ -525,23 +566,33 @@ async def scrape_school(
             await session.close()
         return [], "robots_blocked"
 
+    district = school.get("district_name")
+    cached_dir_path = district_dir_cache.get(district) if (district_dir_cache and district) else None
+    cached_arts_path = district_arts_cache.get(district) if (district_arts_cache and district) else None
+
     context = await browser.new_context(user_agent=SCRAPER_UA)
     page = await context.new_page()
     try:
-        dir_url = await _find_directory_page(page, url, session, robots)
+        dir_url, dir_path = await _find_directory_page(page, url, session, robots, cached_dir_path)
         arts_page = False
         if not dir_url:
-            dir_url = await _find_arts_page(page, url, session, robots)
+            dir_url, arts_path = await _find_arts_page(page, url, session, robots, cached_arts_path)
             if not dir_url:
                 return [], "no_directory_found"
             arts_page = True
+            if arts_path and district_arts_cache is not None and district:
+                district_arts_cache[district] = arts_path
+        elif dir_path and district_dir_cache is not None and district:
+            district_dir_cache[district] = dir_path
         await page.goto(dir_url, timeout=20000, wait_until="domcontentloaded")
         await asyncio.sleep(1.5)
         records = await (_extract_staff_permissive(page) if arts_page else _extract_staff(page))
         # Even on a normal staff directory, fall back to arts page if we found no one
         if not records and not arts_page:
-            arts_url = await _find_arts_page(page, url, session, robots)
+            arts_url, arts_path = await _find_arts_page(page, url, session, robots, cached_arts_path)
             if arts_url:
+                if arts_path and district_arts_cache is not None and district:
+                    district_arts_cache[district] = arts_path
                 await page.goto(arts_url, timeout=20000, wait_until="domcontentloaded")
                 await asyncio.sleep(1.5)
                 records = await _extract_staff_permissive(page)
@@ -658,7 +709,7 @@ async def run_scraper(
                 list(states) + list(MISSED_STATUSES),
             ).rowcount
             log.info("Reset %d missed school(s) for re-scraping.", n)
-        q = "SELECT id, school_name, website_url FROM schools WHERE scraped=0 AND state IN ({})".format(
+        q = "SELECT id, school_name, website_url, district_name FROM schools WHERE scraped=0 AND state IN ({})".format(
             ",".join("?" * len(states))
         )
         rows = conn.execute(q, states).fetchall()
@@ -675,6 +726,11 @@ async def run_scraper(
     completed = 0
     domain_locks: dict[str, asyncio.Lock] = {}
     domain_last_start: dict[str, float] = {}
+    # Shared across all schools in this run: once a school's directory/arts
+    # path is discovered via a known template path, siblings in the same
+    # district try that exact path first (see scrape_school's docstring).
+    district_dir_cache: dict[str, str] = {}
+    district_arts_cache: dict[str, str] = {}
 
     def _domain(url: str) -> str:
         return urllib.parse.urlparse(url).netloc.lower()
@@ -711,7 +767,10 @@ async def run_scraper(
                              school_dict["school_name"], school_dict["website_url"])
                     if on_progress:
                         on_progress(completed + 1, total, school_dict["school_name"], "scraping")
-                    records, status = await scrape_school(browser, school_dict, robots, session)
+                    records, status = await scrape_school(
+                        browser, school_dict, robots, session,
+                        district_dir_cache, district_arts_cache,
+                    )
                     log.info("  → %d art teacher(s) found. Status: %s", len(records), status)
                     saved = save_staff(school_dict["id"], records)
                     with get_conn() as conn:

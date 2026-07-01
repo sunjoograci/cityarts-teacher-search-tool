@@ -252,7 +252,7 @@ async def _check_school_exhaustively(
     id_by_norm: dict[str, int] = {_normalize(t["teacher_name"]): t["id"] for t in teachers_no_contact}
 
     try:
-        dir_url = await _find_directory_page(page, url, session, robots)
+        dir_url, _ = await _find_directory_page(page, url, session, robots)
         if not dir_url:
             log.info("  No directory page found for %s", url)
             return {}
