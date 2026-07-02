@@ -195,18 +195,16 @@
     /* Scrape panel */
     .scrape-form { max-width: 480px; }
     .scrape-form h3 { font-size: 0.95rem; font-weight: 600; color: #1a2942; margin-bottom: 10px; }
-    .state-grid {
-      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px;
+    .scrape-state-select { margin-bottom: 18px; }
+    .scrape-state-select select {
+      padding: 7px 12px;
+      border: 1px solid #cbd5e0;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      outline: none;
+      min-width: 220px;
     }
-    .state-chip {
-      display: flex; align-items: center; gap: 5px;
-      padding: 5px 12px; border-radius: 99px;
-      border: 1.5px solid #cbd5e0; background: #fff;
-      font-size: 0.82rem; cursor: pointer; user-select: none;
-      transition: border-color .15s, background .15s;
-    }
-    .state-chip input { margin: 0; cursor: pointer; }
-    .state-chip:has(input:checked) { border-color: #1a3c5e; background: #e8eef5; }
+    .scrape-state-select select:focus { border-color: #1a3c5e; }
     .scrape-options { margin-bottom: 18px; }
     .scrape-options label {
       display: flex; align-items: center; gap: 8px;
@@ -303,10 +301,6 @@
       <select id="teacher-state" onchange="loadTeachers()">
         <option value="">All States</option>
       </select>
-      <label class="checkbox">
-        <input type="checkbox" id="teacher-only-email" onchange="loadTeachers()">
-        Email only
-      </label>
       <div class="spacer"></div>
       <button class="btn btn-export" onclick="exportTeachers()">Download .xlsx</button>
     </div>
@@ -335,8 +329,12 @@
   <!-- Scrape panel -->
   <div class="panel" id="panel-scrape" style="display:none">
     <div class="scrape-form">
-      <h3>Select states to scrape</h3>
-      <div class="state-grid" id="scrape-state-grid"></div>
+      <h3>Select state to scrape</h3>
+      <div class="scrape-state-select">
+        <select id="scrape-state-select" class="controls">
+          <option value="">— choose a state —</option>
+        </select>
+      </div>
       <div class="scrape-options">
         <label>
           <input type="checkbox" id="scrape-rescrape">
@@ -385,12 +383,11 @@
   function populateStatePickers() {
     const teacherSel = document.getElementById('teacher-state');
     const schoolSel = document.getElementById('school-state');
-    const grid = document.getElementById('scrape-state-grid');
+    const scrapeSel = document.getElementById('scrape-state-select');
     for (const [abbr, name] of US_STATES) {
       teacherSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
       schoolSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
-      grid.insertAdjacentHTML('beforeend',
-        `<label class="state-chip"><input type="checkbox" name="scrape-state" value="${abbr}" ${abbr === 'TX' ? 'checked' : ''}> ${name}</label>`);
+      scrapeSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
     }
   }
   populateStatePickers();
@@ -418,11 +415,10 @@
     if (page) teacherPage = page;
     const q     = document.getElementById('teacher-search').value;
     const state = document.getElementById('teacher-state').value;
-    const email = document.getElementById('teacher-only-email').checked ? '1' : '0';
     const wrap  = document.getElementById('teacher-table-wrap');
     wrap.innerHTML = '<div class="loading">Loading…</div>';
 
-    const res  = await fetch(`/api/teachers?q=${encodeURIComponent(q)}&state=${state}&only_email=${email}&page=${teacherPage}`);
+    const res  = await fetch(`/api/teachers?q=${encodeURIComponent(q)}&state=${state}&page=${teacherPage}`);
     const data = await res.json();
 
     if (!data.rows.length) {
@@ -516,8 +512,7 @@
 
   function exportTeachers() {
     const state = document.getElementById('teacher-state').value;
-    const email = document.getElementById('teacher-only-email').checked ? '1' : '0';
-    window.location = `/export/teachers.xlsx?state=${state}&only_email=${email}`;
+    window.location = `/export/teachers.xlsx?state=${state}`;
   }
 
   function exportSchools() {
@@ -554,8 +549,9 @@
   let scrapePoller = null;
 
   async function startScrape() {
-    const states = [...document.querySelectorAll('input[name="scrape-state"]:checked')].map(el => el.value);
-    if (!states.length) { alert('Select at least one state.'); return; }
+    const state = document.getElementById('scrape-state-select').value;
+    if (!state) { alert('Select a state first.'); return; }
+    const states = [state];
     const rescrape = document.getElementById('scrape-rescrape').checked;
 
     const res = await fetch('/api/scrape/start', {
