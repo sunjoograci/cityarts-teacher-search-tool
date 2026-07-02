@@ -281,10 +281,6 @@
       <div class="num" id="stat-teachers">{{ stats.teachers_total }}</div>
       <div class="label">Art Teachers Found</div>
     </div>
-    <div class="stat-card">
-      <div class="num" id="stat-emails">{{ stats.teachers_with_email }}</div>
-      <div class="label">With Email</div>
-    </div>
   </div>
 
   <!-- Tabs -->
@@ -645,7 +641,6 @@
         const s = await (await fetch('/api/stats')).json();
         document.getElementById('stat-scraped').textContent  = s.scraped.toLocaleString();
         document.getElementById('stat-teachers').textContent = s.teachers_total.toLocaleString();
-        document.getElementById('stat-emails').textContent   = s.teachers_with_email.toLocaleString();
       }
     }
   }
