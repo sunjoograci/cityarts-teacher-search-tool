@@ -34,7 +34,13 @@ def init_db() -> None:
                 title             TEXT,
                 email             TEXT,
                 resolution_method TEXT DEFAULT 'unresolved',
+                added_at          TEXT,
                 UNIQUE(school_id, teacher_name)
             );
         """)
+        # Migration for existing databases that predate the added_at column
+        try:
+            conn.execute("ALTER TABLE staff ADD COLUMN added_at TEXT")
+        except Exception:
+            pass
     print("Database initialised.")

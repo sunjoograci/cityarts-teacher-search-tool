@@ -640,15 +640,17 @@ async def scrape_school(
 
 
 def save_staff(school_id: int, records: list[StaffRecord]) -> int:
+    import datetime
     saved = 0
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with get_conn() as conn:
         for r in records:
             conn.execute(
                 """
-                INSERT OR IGNORE INTO staff (school_id, teacher_name, title, email, resolution_method)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO staff (school_id, teacher_name, title, email, resolution_method, added_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (school_id, r.name, r.title, r.email, "scraped" if r.email else "unresolved"),
+                (school_id, r.name, r.title, r.email, "scraped" if r.email else "unresolved", now),
             )
             if conn.execute("SELECT changes()").fetchone()[0]:
                 saved += 1

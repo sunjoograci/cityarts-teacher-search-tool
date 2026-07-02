@@ -141,14 +141,28 @@ def api_scrape_status():
     s = dict(_scrape_state)
     elapsed = None
     eta = None
+    started_at_iso = None
     if s["started_at"]:
+        import datetime
         elapsed = time.time() - s["started_at"]
+        started_at_iso = datetime.datetime.fromtimestamp(
+            s["started_at"], tz=datetime.timezone.utc
+        ).isoformat()
         if s["current"] > 0 and s["total"] > 0 and s["running"]:
             rate = s["current"] / elapsed
             remaining = s["total"] - s["current"]
             eta = remaining / rate if rate > 0 else None
     s["elapsed"] = elapsed
     s["eta"] = eta
+    s["started_at_iso"] = started_at_iso
+    # Count teachers added during this scrape session
+    if started_at_iso and DB_PATH.exists():
+        with get_conn() as conn:
+            s["new_teachers"] = conn.execute(
+                "SELECT COUNT(*) FROM staff WHERE added_at >= ?", (started_at_iso,)
+            ).fetchone()[0]
+    else:
+        s["new_teachers"] = 0
     return jsonify(s)
 
 
@@ -213,7 +227,7 @@ def api_schools():
             f"SELECT COUNT(*) FROM schools {where}", params
         ).fetchone()[0]
         rows = conn.execute(
-            f"""SELECT school_name, city, state, district_name,
+            f"""SELECT id, school_name, city, state, district_name,
                        website_url, scraped, scrape_status
                 FROM schools {where}
                 ORDER BY school_name
@@ -231,9 +245,11 @@ def api_schools():
 
 @app.route("/api/teachers")
 def api_teachers():
+    import datetime
     state = request.args.get("state", "").upper()
     search = request.args.get("q", "").strip()
     only_email = request.args.get("only_email", "0") == "1"
+    added_since = request.args.get("added_since", "").strip()
     page = max(1, int(request.args.get("page", 1)))
     per_page = 50
 
@@ -248,6 +264,22 @@ def api_teachers():
         params += [f"%{search}%"] * 3
     if only_email:
         clauses.append("s.email IS NOT NULL AND s.email != ''")
+    if added_since:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if added_since == "today":
+            cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif added_since == "week":
+            cutoff = now - datetime.timedelta(days=7)
+        elif added_since == "month":
+            cutoff = now - datetime.timedelta(days=30)
+        else:
+            try:
+                cutoff = datetime.datetime.fromisoformat(added_since)
+            except ValueError:
+                cutoff = None
+        if cutoff:
+            clauses.append("s.added_at >= ?")
+            params.append(cutoff.isoformat())
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
@@ -258,7 +290,7 @@ def api_teachers():
             params,
         ).fetchone()[0]
         rows = conn.execute(
-            f"""SELECT s.teacher_name, s.title, s.email, s.resolution_method,
+            f"""SELECT s.id, s.teacher_name, s.title, s.email, s.resolution_method,
                        sc.school_name, sc.city, sc.state, sc.district_name,
                        sc.website_url
                 FROM staff s
@@ -274,6 +306,25 @@ def api_teachers():
         "per_page": per_page,
         "rows": [dict(r) for r in rows],
     })
+
+
+@app.route("/api/teachers/<int:teacher_id>", methods=["DELETE"])
+def api_delete_teacher(teacher_id):
+    with get_conn() as conn:
+        changes = conn.execute("DELETE FROM staff WHERE id = ?", (teacher_id,)).rowcount
+    if changes:
+        return jsonify({"ok": True})
+    return jsonify({"error": "Not found"}), 404
+
+
+@app.route("/api/schools/<int:school_id>", methods=["DELETE"])
+def api_delete_school(school_id):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM staff WHERE school_id = ?", (school_id,))
+        changes = conn.execute("DELETE FROM schools WHERE id = ?", (school_id,)).rowcount
+    if changes:
+        return jsonify({"ok": True})
+    return jsonify({"error": "Not found"}), 404
 
 
 @app.route("/export/teachers.xlsx")

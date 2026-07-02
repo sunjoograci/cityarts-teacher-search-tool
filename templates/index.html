@@ -192,6 +192,18 @@
 
     .loading { text-align: center; padding: 40px; color: #6b7c93; font-size: 0.9rem; }
 
+    .btn-delete {
+      padding: 3px 9px;
+      border-radius: 4px;
+      border: 1px solid #f5c6c6;
+      background: #fff5f5;
+      color: #b71c1c;
+      font-size: 0.78rem;
+      cursor: pointer;
+      line-height: 1.4;
+    }
+    .btn-delete:hover { background: #fdecea; border-color: #e57373; }
+
     /* Scrape panel */
     .scrape-form { max-width: 480px; }
     .scrape-form h3 { font-size: 0.95rem; font-weight: 600; color: #1a2942; margin-bottom: 10px; }
@@ -250,6 +262,18 @@
     }
     .scrape-done.ok { background: #e8f5e9; color: #256427; }
     .scrape-done.err { background: #fdecea; color: #b71c1c; }
+    .btn-view-results {
+      margin-left: 10px;
+      padding: 3px 12px;
+      border-radius: 5px;
+      border: 1.5px solid #256427;
+      background: #fff;
+      color: #256427;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-view-results:hover { background: #e8f5e9; }
   </style>
 </head>
 <body>
@@ -296,6 +320,12 @@
       <input type="search" id="teacher-search" placeholder="Search name, school, city…" oninput="debounce(loadTeachers)">
       <select id="teacher-state" onchange="loadTeachers()">
         <option value="">All States</option>
+      </select>
+      <select id="teacher-added-since" onchange="loadTeachers()">
+        <option value="">All time</option>
+        <option value="today">Added today</option>
+        <option value="week">Added this week</option>
+        <option value="month">Added this month</option>
       </select>
       <div class="spacer"></div>
       <button class="btn btn-export" onclick="exportTeachers()">Download .xlsx</button>
@@ -409,12 +439,13 @@
   // ---- Teachers ----
   async function loadTeachers(page) {
     if (page) teacherPage = page;
-    const q     = document.getElementById('teacher-search').value;
-    const state = document.getElementById('teacher-state').value;
-    const wrap  = document.getElementById('teacher-table-wrap');
+    const q          = document.getElementById('teacher-search').value;
+    const state      = document.getElementById('teacher-state').value;
+    const addedSince = document.getElementById('teacher-added-since').value;
+    const wrap       = document.getElementById('teacher-table-wrap');
     wrap.innerHTML = '<div class="loading">Loading…</div>';
 
-    const res  = await fetch(`/api/teachers?q=${encodeURIComponent(q)}&state=${state}&page=${teacherPage}`);
+    const res  = await fetch(`/api/teachers?q=${encodeURIComponent(q)}&state=${state}&added_since=${encodeURIComponent(addedSince)}&page=${teacherPage}`);
     const data = await res.json();
 
     if (!data.rows.length) {
@@ -434,7 +465,7 @@
       <table>
         <thead><tr>
           <th>Teacher</th><th>Title</th><th>Email</th>
-          <th>School</th><th>City</th><th>State</th><th>District</th><th>Website</th>
+          <th>School</th><th>City</th><th>State</th><th>District</th><th>Website</th><th></th>
         </tr></thead>
         <tbody>
         ${data.rows.map(r => `
@@ -447,6 +478,7 @@
             <td>${esc(r.state)}</td>
             <td>${esc(r.district_name || '')}</td>
             <td>${websiteLink(r.email, r.resolution_method, r.website_url)}</td>
+            <td><button class="btn-delete" onclick="deleteTeacher(${r.id}, this)">Delete</button></td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -478,7 +510,7 @@
       <table>
         <thead><tr>
           <th>School</th><th>City</th><th>State</th><th>District</th>
-          <th>Website</th><th>Scraped</th>
+          <th>Website</th><th>Scraped</th><th></th>
         </tr></thead>
         <tbody>
         ${data.rows.map(r => `
@@ -489,6 +521,7 @@
             <td>${esc(r.district_name || '')}</td>
             <td>${r.website_url ? `<a href="${esc(r.website_url)}" target="_blank" rel="noopener">${esc(r.website_url)}</a>` : badge('no url', 'gray')}</td>
             <td>${r.scraped ? badge('done', 'green') : badge('pending', 'orange')}</td>
+            <td><button class="btn-delete" onclick="deleteSchool(${r.id}, this)">Delete</button></td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -635,7 +668,17 @@
         if (error) {
           resultEl.innerHTML = `<div class="scrape-done err">Error: ${esc(error)}</div>`;
         } else {
-          resultEl.innerHTML = `<div class="scrape-done ok">Scrape complete — ${(total||0).toLocaleString()} schools processed.</div>`;
+          const n = data.new_teachers || 0;
+          const stateLabel = (data.states || []).join(', ') || 'selected states';
+          const iso = data.started_at_iso || '';
+          resultEl.innerHTML = `
+            <div class="scrape-done ok">
+              Scrape complete — ${(total||0).toLocaleString()} schools processed.
+              ${n > 0
+                ? `Found <b>${n.toLocaleString()}</b> new teacher${n === 1 ? '' : 's'}.
+                   <button class="btn-view-results" onclick="viewNewTeachers('${esc((data.states||[])[0]||'')}', '${esc(iso)}')">View new teachers →</button>`
+                : 'No new teachers found this run.'}
+            </div>`;
         }
         // Refresh stats
         const s = await (await fetch('/api/stats')).json();
@@ -652,6 +695,48 @@
     if (m < 60) return `${m}m ${r}s`;
     const h = Math.floor(m / 60), rm = m % 60;
     return `${h}h ${rm}m`;
+  }
+
+  // ---- View new teachers after scrape ----
+  function viewNewTeachers(state, addedSinceIso) {
+    if (state) document.getElementById('teacher-state').value = state;
+    const sel = document.getElementById('teacher-added-since');
+    // Add a hidden option for this exact ISO timestamp if not already present
+    let opt = sel.querySelector(`option[value="${addedSinceIso}"]`);
+    if (!opt && addedSinceIso) {
+      opt = document.createElement('option');
+      opt.value = addedSinceIso;
+      opt.textContent = 'This scrape session';
+      sel.appendChild(opt);
+    }
+    if (addedSinceIso) sel.value = addedSinceIso;
+    switchTab('teachers', document.querySelector('.tab'));
+    loadTeachers(1);
+  }
+
+  // ---- Delete ----
+  async function deleteTeacher(id, btn) {
+    if (!confirm('Delete this teacher?')) return;
+    btn.disabled = true;
+    const res = await fetch(`/api/teachers/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      btn.closest('tr').remove();
+    } else {
+      btn.disabled = false;
+      alert('Delete failed.');
+    }
+  }
+
+  async function deleteSchool(id, btn) {
+    if (!confirm('Delete this school and all its teachers?')) return;
+    btn.disabled = true;
+    const res = await fetch(`/api/schools/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      btn.closest('tr').remove();
+    } else {
+      btn.disabled = false;
+      alert('Delete failed.');
+    }
   }
 
   // Initial load
