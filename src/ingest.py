@@ -14,6 +14,7 @@ import argparse
 import csv
 import html.parser
 import logging
+import re
 import sqlite3
 import urllib.request
 import zipfile
@@ -66,8 +67,62 @@ _COL_ALIASES: dict[str, str] = {
     "type": "TYPE",
     # Legacy CCD CSV alternate state column
     "stabr": "ST",
-    "status": "SY_STATUS_TEXT",
+    # Grade level / school level
+    "school level": "SCHOOL_LEVEL",
+    "school_level": "SCHOOL_LEVEL",
+    "level": "SCHOOL_LEVEL",
+    "lowest grade offered": "GSLO",
+    "highest grade offered": "GSHI",
+    "grade span low": "GSLO",
+    "grade span high": "GSHI",
+    "gslo": "GSLO",
+    "gshi": "GSHI",
 }
+
+_ART_SCHOOL_RE = re.compile(
+    r"\b(arts?|visual arts?|fine arts?|design|creative|performing arts?|"
+    r"studio|animation|film|photography|architecture|media arts?|"
+    r"digital arts?|graphic arts?|art and)\b",
+    re.IGNORECASE,
+)
+
+
+def _grade_to_int(g: str) -> int:
+    g = g.strip().upper()
+    if g in ("PK", "P", "PR"): return -1
+    if g in ("KG", "K"): return 0
+    if g == "UN": return -1
+    try: return int(g)
+    except: return -1
+
+
+def _is_middle_or_high(row: dict) -> bool:
+    """Return True if the school serves any grade 6–12."""
+    level = (row.get("SCHOOL_LEVEL") or "").strip()
+    if level in ("2", "3"):
+        return True
+    if level == "1":
+        return False
+    level_l = level.lower()
+    if any(x in level_l for x in ("middle", "high", "secondary", "junior high")):
+        return True
+    if any(x in level_l for x in ("elementary", "primary", "prekindergarten")):
+        return False
+    # Grade span fallback
+    gshi = (row.get("GSHI") or "").strip()
+    if gshi:
+        hi = _grade_to_int(gshi)
+        if hi >= 6: return True
+        if 0 <= hi < 6: return False
+    # Name-based fallback — exclude obvious elementary schools
+    name = (row.get("SCH_NAME") or "").lower()
+    if re.search(r"\b(elementary|primary|elem\b|primaria|pre.?k)\b", name):
+        return False
+    return True  # unknown → include
+
+
+def _is_arts_school(school_name: str) -> bool:
+    return bool(_ART_SCHOOL_RE.search(school_name))
 
 # HTML entities that indicate missing/N/A data in ELSI exports
 _ELSI_NULL = {"†", "–", "‡", "&dagger;", "&ndash;", "&Dagger;", "N", "M", ""}
@@ -296,19 +351,25 @@ def ingest_schools(
             status = (row.get("SY_STATUS_TEXT") or "").strip()
             if status not in ("Open", "New", "1", "3", ""):
                 continue
+            if not _is_middle_or_high(row):
+                continue
             nces_id = row.get("NCESSCH", "").strip()
             school_name = row.get("SCH_NAME", "").strip()
             city = row.get("LCITY", "").strip()
             district_name = row.get("LEA_NAME", "").strip()
             website_url = _normalize_url(row.get("WEBSITE", ""))
+            school_level = (row.get("SCHOOL_LEVEL") or "").strip() or None
+            arts = 1 if _is_arts_school(school_name) else 0
             try:
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO schools
-                        (nces_id, school_name, city, state, district_name, website_url)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                        (nces_id, school_name, city, state, district_name, website_url,
+                         school_level, is_arts_school)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (nces_id, school_name, city, state, district_name, website_url),
+                    (nces_id, school_name, city, state, district_name, website_url,
+                     school_level, arts),
                 )
                 if conn.execute("SELECT changes()").fetchone()[0]:
                     inserted += 1

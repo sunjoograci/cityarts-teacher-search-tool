@@ -26,7 +26,9 @@ def init_db() -> None:
                 district_name TEXT,
                 website_url   TEXT,
                 scraped       INTEGER DEFAULT 0,
-                scrape_status TEXT
+                scrape_status TEXT,
+                school_level  TEXT,
+                is_arts_school INTEGER DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS staff (
@@ -40,9 +42,13 @@ def init_db() -> None:
                 UNIQUE(school_id, teacher_name)
             );
         """)
-        # Migration for existing databases that predate the added_at column
-        try:
-            conn.execute("ALTER TABLE staff ADD COLUMN added_at TEXT")
-        except Exception:
-            pass
+        for migration in [
+            "ALTER TABLE staff ADD COLUMN added_at TEXT",
+            "ALTER TABLE schools ADD COLUMN school_level TEXT",
+            "ALTER TABLE schools ADD COLUMN is_arts_school INTEGER DEFAULT 0",
+        ]:
+            try:
+                conn.execute(migration)
+            except Exception:
+                pass
     print("Database initialised.")

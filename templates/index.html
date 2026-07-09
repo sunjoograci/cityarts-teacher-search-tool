@@ -358,6 +358,7 @@
   <!-- Tabs -->
   <div class="tabs">
     <button class="tab active" onclick="switchTab('teachers', this)">Art Teachers</button>
+    <button class="tab" onclick="switchTab('artschools', this)">Art Schools</button>
     <button class="tab" onclick="switchTab('schools', this)">All Schools</button>
     <button class="tab" onclick="switchTab('scrape', this)">Scrape</button>
   </div>
@@ -387,6 +388,25 @@
     </div>
     <div id="teacher-table-wrap"></div>
     <div class="pagination" id="teacher-pagination"></div>
+  </div>
+
+  <!-- Art Schools panel -->
+  <div class="panel" id="panel-artschools" style="display:none">
+    <div class="info-banner">
+      <div class="info-banner-icon">🖼️</div>
+      <div>
+        <div class="info-banner-title">Art Schools</div>
+        <div class="info-banner-body">These are schools whose names indicate they are dedicated arts, design, or visual arts programs — pulled automatically from the school name. Schools marked <b>Scraped: Done</b> have been visited and any teachers found will appear in the <b>Art Teachers</b> tab. <b>Pending</b> schools haven't been scraped yet — run a scrape to find their teachers. Art schools are always scraped first when you start a scrape.</div>
+      </div>
+    </div>
+    <div class="controls">
+      <input type="search" id="artschool-search" placeholder="Search school, city, district…" oninput="debounce(loadArtSchools)">
+      <select id="artschool-state" onchange="loadArtSchools()">
+        <option value="">All States</option>
+      </select>
+    </div>
+    <div id="artschool-table-wrap"></div>
+    <div class="pagination" id="artschool-pagination"></div>
   </div>
 
   <!-- Schools panel -->
@@ -476,11 +496,13 @@
   ];
 
   function populateStatePickers() {
-    const teacherSel = document.getElementById('teacher-state');
-    const schoolSel = document.getElementById('school-state');
-    const scrapeSel = document.getElementById('scrape-state-select');
+    const teacherSel    = document.getElementById('teacher-state');
+    const artSchoolSel  = document.getElementById('artschool-state');
+    const schoolSel     = document.getElementById('school-state');
+    const scrapeSel     = document.getElementById('scrape-state-select');
     for (const [abbr, name] of US_STATES) {
       teacherSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
+      artSchoolSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
       schoolSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
       scrapeSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
     }
@@ -498,9 +520,11 @@
   function switchTab(tab, el) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     el.classList.add('active');
-    document.getElementById('panel-teachers').style.display = tab === 'teachers' ? '' : 'none';
-    document.getElementById('panel-schools').style.display  = tab === 'schools'  ? '' : 'none';
-    document.getElementById('panel-scrape').style.display   = tab === 'scrape'   ? '' : 'none';
+    document.getElementById('panel-teachers').style.display   = tab === 'teachers'   ? '' : 'none';
+    document.getElementById('panel-artschools').style.display = tab === 'artschools' ? '' : 'none';
+    document.getElementById('panel-schools').style.display    = tab === 'schools'    ? '' : 'none';
+    document.getElementById('panel-scrape').style.display     = tab === 'scrape'     ? '' : 'none';
+    if (tab === 'artschools') loadArtSchools();
     if (tab === 'schools') loadSchools();
     if (tab === 'scrape')  pollScrapeStatus();
   }
@@ -556,6 +580,49 @@
   }
 
   // ---- Schools ----
+  let artSchoolPage = 1;
+  async function loadArtSchools(page) {
+    if (page) artSchoolPage = page;
+    const q     = document.getElementById('artschool-search').value;
+    const state = document.getElementById('artschool-state').value;
+    const wrap  = document.getElementById('artschool-table-wrap');
+    wrap.innerHTML = '<div class="loading">Loading…</div>';
+
+    const res  = await fetch(`/api/art-schools?q=${encodeURIComponent(q)}&state=${state}&page=${artSchoolPage}`);
+    const data = await res.json();
+
+    if (!data.rows.length) {
+      wrap.innerHTML = '<div class="empty-state"><div class="icon">🖼️</div><p>No art schools found for the selected filters.</p></div>';
+      document.getElementById('artschool-pagination').innerHTML = '';
+      return;
+    }
+
+    const html = `
+      <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>School</th><th>City</th><th>State</th><th>District</th>
+          <th>Website</th><th>Scraped</th><th>Teachers Found</th><th></th>
+        </tr></thead>
+        <tbody>
+        ${data.rows.map(r => `
+          <tr>
+            <td>${esc(r.school_name)}</td>
+            <td>${esc(r.city || '')}</td>
+            <td>${esc(r.state)}</td>
+            <td>${esc(r.district_name || '')}</td>
+            <td>${r.website_url ? `<a href="${esc(r.website_url)}" target="_blank" rel="noopener">${esc(r.website_url)}</a>` : badge('no url', 'gray')}</td>
+            <td>${r.scraped ? badge('done', 'green') : badge('pending', 'orange')}</td>
+            <td>${r.teacher_count > 0 ? `<b>${r.teacher_count}</b>` : '—'}</td>
+            <td><button class="btn-delete" onclick="deleteSchool(${r.id}, this)">Delete</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>`;
+    wrap.innerHTML = html;
+    renderPagination('artschool-pagination', data.total, data.per_page, artSchoolPage, loadArtSchools);
+  }
+
   async function loadSchools(page) {
     if (page) schoolPage = page;
     const q      = document.getElementById('school-search').value;

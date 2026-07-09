@@ -711,7 +711,9 @@ async def run_scraper(
                 list(states) + list(MISSED_STATUSES),
             ).rowcount
             log.info("Reset %d missed school(s) for re-scraping.", n)
-        q = "SELECT id, school_name, website_url, district_name FROM schools WHERE scraped=0 AND state IN ({})".format(
+        q = """SELECT id, school_name, website_url, district_name FROM schools
+               WHERE scraped=0 AND state IN ({})
+               ORDER BY is_arts_school DESC, school_name""".format(
             ",".join("?" * len(states))
         )
         rows = conn.execute(q, states).fetchall()

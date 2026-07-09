@@ -310,6 +310,49 @@ def api_teachers():
     })
 
 
+@app.route("/api/art-schools")
+def api_art_schools():
+    state = request.args.get("state", "").upper()
+    search = request.args.get("q", "").strip()
+    page = max(1, int(request.args.get("page", 1)))
+    per_page = 50
+
+    clauses = ["is_arts_school = 1"]
+    params = []
+    if state:
+        clauses.append("sc.state = ?")
+        params.append(state)
+    if search:
+        clauses.append("(sc.school_name LIKE ? OR sc.city LIKE ? OR sc.district_name LIKE ?)")
+        params += [f"%{search}%"] * 3
+
+    where = "WHERE " + " AND ".join(clauses)
+
+    with get_conn() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM schools sc {where}", params
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"""SELECT sc.id, sc.school_name, sc.city, sc.state, sc.district_name,
+                       sc.website_url, sc.scraped, sc.scrape_status,
+                       COUNT(s.id) as teacher_count
+                FROM schools sc
+                LEFT JOIN staff s ON s.school_id = sc.id
+                {where}
+                GROUP BY sc.id
+                ORDER BY sc.scraped DESC, sc.school_name
+                LIMIT ? OFFSET ?""",
+            params + [per_page, (page - 1) * per_page],
+        ).fetchall()
+
+    return jsonify({
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "rows": [dict(r) for r in rows],
+    })
+
+
 @app.route("/api/teachers/<int:teacher_id>", methods=["DELETE"])
 def api_delete_teacher(teacher_id):
     with get_conn() as conn:
