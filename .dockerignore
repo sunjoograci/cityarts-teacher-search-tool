@@ -1,5 +1,5 @@
-# Keep the build context small. Do NOT ignore .git — scrape_service.py needs
-# it at runtime to commit and push the updated database.
+.git/
+data/
 __pycache__/
 *.pyc
 *.pyo
@@ -11,3 +11,4 @@ node_modules/
 .mypy_cache/
 *.log
 .DS_Store
+.env

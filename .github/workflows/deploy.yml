@@ -1,0 +1,36 @@
+name: Deploy to Oracle
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Oracle VM
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ubuntu
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          envs: DEPLOY_TOKEN
+          command_timeout: 30m
+          script: |
+            set -e
+            cd /opt/cityarts
+            sudo git fetch https://x-access-token:$DEPLOY_TOKEN@github.com/sunjoograci/cityarts-teacher-search-tool.git main
+            sudo git reset --hard FETCH_HEAD
+            sudo docker build -t cityarts .
+            sudo docker stop cityarts 2>/dev/null || true
+            sudo docker rm cityarts 2>/dev/null || true
+            sudo docker run -d \
+              --name cityarts \
+              --restart always \
+              -v /data:/data \
+              -e DB_PATH=/data/schools.db \
+              -p 8080:8080 \
+              -e PORT=8080 \
+              cityarts

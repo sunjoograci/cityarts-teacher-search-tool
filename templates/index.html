@@ -192,21 +192,47 @@
 
     .loading { text-align: center; padding: 40px; color: #6b7c93; font-size: 0.9rem; }
 
+    .btn-delete {
+      padding: 3px 9px;
+      border-radius: 4px;
+      border: 1px solid #f5c6c6;
+      background: #fff5f5;
+      color: #b71c1c;
+      font-size: 0.78rem;
+      cursor: pointer;
+      line-height: 1.4;
+    }
+    .btn-delete:hover { background: #fdecea; border-color: #e57373; }
+
+    /* Info banners */
+    .info-banner {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      background: #f0f4f9;
+      border: 1px solid #d0dce9;
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin-bottom: 20px;
+    }
+    .info-banner-icon { font-size: 1.6rem; line-height: 1; flex-shrink: 0; margin-top: 2px; }
+    .info-banner-title { font-size: 0.9rem; font-weight: 700; color: #1a2942; margin-bottom: 4px; }
+    .info-banner-body { font-size: 0.83rem; color: #4a5568; line-height: 1.6; }
+    .info-banner-body b { color: #1a2942; }
+
     /* Scrape panel */
     .scrape-form { max-width: 480px; }
     .scrape-form h3 { font-size: 0.95rem; font-weight: 600; color: #1a2942; margin-bottom: 10px; }
-    .state-grid {
-      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px;
+    .scrape-state-select { margin-bottom: 18px; }
+    .scrape-state-select select {
+      padding: 7px 12px;
+      border: 1px solid #cbd5e0;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      outline: none;
+      min-width: 220px;
     }
-    .state-chip {
-      display: flex; align-items: center; gap: 5px;
-      padding: 5px 12px; border-radius: 99px;
-      border: 1.5px solid #cbd5e0; background: #fff;
-      font-size: 0.82rem; cursor: pointer; user-select: none;
-      transition: border-color .15s, background .15s;
-    }
-    .state-chip input { margin: 0; cursor: pointer; }
-    .state-chip:has(input:checked) { border-color: #1a3c5e; background: #e8eef5; }
+    .scrape-state-select select:focus { border-color: #1a3c5e; }
     .scrape-options { margin-bottom: 18px; }
     .scrape-options label {
       display: flex; align-items: center; gap: 8px;
@@ -252,6 +278,50 @@
     }
     .scrape-done.ok { background: #e8f5e9; color: #256427; }
     .scrape-done.err { background: #fdecea; color: #b71c1c; }
+    /* Scrape-busy modal */
+    .modal-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.visible { display: flex; }
+    .modal-box {
+      background: #fff;
+      border-radius: 12px;
+      padding: 32px 28px;
+      max-width: 420px;
+      width: 90%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+      text-align: center;
+    }
+    .modal-icon { font-size: 2.2rem; margin-bottom: 12px; }
+    .modal-title { font-size: 1.1rem; font-weight: 700; color: #1a2942; margin-bottom: 10px; }
+    .modal-body { font-size: 0.9rem; color: #4a5568; line-height: 1.6; margin-bottom: 22px; }
+    .modal-body b { color: #1a2942; }
+    .modal-close {
+      padding: 9px 28px;
+      background: #1a3c5e; color: #fff;
+      border: none; border-radius: 6px;
+      font-size: 0.9rem; font-weight: 600;
+      cursor: pointer;
+    }
+    .modal-close:hover { background: #14304e; }
+
+    .btn-view-results {
+      margin-left: 10px;
+      padding: 3px 12px;
+      border-radius: 5px;
+      border: 1.5px solid #256427;
+      background: #fff;
+      color: #256427;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-view-results:hover { background: #e8f5e9; }
   </style>
 </head>
 <body>
@@ -283,30 +353,36 @@
       <div class="num" id="stat-teachers">{{ stats.teachers_total }}</div>
       <div class="label">Art Teachers Found</div>
     </div>
-    <div class="stat-card">
-      <div class="num" id="stat-emails">{{ stats.teachers_with_email }}</div>
-      <div class="label">With Email</div>
-    </div>
   </div>
 
   <!-- Tabs -->
   <div class="tabs">
     <button class="tab active" onclick="switchTab('teachers', this)">Art Teachers</button>
+    <button class="tab" onclick="switchTab('artschools', this)">Art Schools</button>
     <button class="tab" onclick="switchTab('schools', this)">All Schools</button>
     <button class="tab" onclick="switchTab('scrape', this)">Scrape</button>
   </div>
 
   <!-- Teachers panel -->
   <div class="panel" id="panel-teachers">
+    <div class="info-banner">
+      <div class="info-banner-icon">🎨</div>
+      <div>
+        <div class="info-banner-title">Art Teachers</div>
+        <div class="info-banner-body">This tab shows every art teacher found so far. Search by name, school, or city — or filter by state. Use <b>Download .xlsx</b> to export the list to Excel. New teachers only appear here after a scrape has been run from the <b>Scrape tab</b>.</div>
+      </div>
+    </div>
     <div class="controls">
       <input type="search" id="teacher-search" placeholder="Search name, school, city…" oninput="debounce(loadTeachers)">
       <select id="teacher-state" onchange="loadTeachers()">
         <option value="">All States</option>
       </select>
-      <label class="checkbox">
-        <input type="checkbox" id="teacher-only-email" onchange="loadTeachers()">
-        Email only
-      </label>
+      <select id="teacher-added-since" onchange="loadTeachers()">
+        <option value="">All time</option>
+        <option value="today">Added today</option>
+        <option value="week">Added this week</option>
+        <option value="month">Added this month</option>
+      </select>
       <div class="spacer"></div>
       <button class="btn btn-export" onclick="exportTeachers()">Download .xlsx</button>
     </div>
@@ -314,8 +390,34 @@
     <div class="pagination" id="teacher-pagination"></div>
   </div>
 
+  <!-- Art Schools panel -->
+  <div class="panel" id="panel-artschools" style="display:none">
+    <div class="info-banner">
+      <div class="info-banner-icon">🖼️</div>
+      <div>
+        <div class="info-banner-title">Art Schools</div>
+        <div class="info-banner-body">These are schools whose names indicate they are dedicated arts, design, or visual arts programs — pulled automatically from the school name. Schools marked <b>Scraped: Done</b> have been visited and any teachers found will appear in the <b>Art Teachers</b> tab. <b>Pending</b> schools haven't been scraped yet — run a scrape to find their teachers. Art schools are always scraped first when you start a scrape.</div>
+      </div>
+    </div>
+    <div class="controls">
+      <input type="search" id="artschool-search" placeholder="Search school, city, district…" oninput="debounce(loadArtSchools)">
+      <select id="artschool-state" onchange="loadArtSchools()">
+        <option value="">All States</option>
+      </select>
+    </div>
+    <div id="artschool-table-wrap"></div>
+    <div class="pagination" id="artschool-pagination"></div>
+  </div>
+
   <!-- Schools panel -->
   <div class="panel" id="panel-schools" style="display:none">
+    <div class="info-banner">
+      <div class="info-banner-icon">🏫</div>
+      <div>
+        <div class="info-banner-title">All Schools</div>
+        <div class="info-banner-body">This is the full list of public schools loaded into the system. <b>Scraped: Done</b> means we've already visited that school's website looking for art teachers. <b>Scraped: Pending</b> means it hasn't been checked yet — run a scrape to process it. Filter by state or check <b>Has website</b> to focus on schools we can actually scrape.</div>
+      </div>
+    </div>
     <div class="controls">
       <input type="search" id="school-search" placeholder="Search school, city, district…" oninput="debounce(loadSchools)">
       <select id="school-state" onchange="loadSchools()">
@@ -334,9 +436,20 @@
 
   <!-- Scrape panel -->
   <div class="panel" id="panel-scrape" style="display:none">
+    <div class="info-banner">
+      <div class="info-banner-icon">🔍</div>
+      <div>
+        <div class="info-banner-title">Scrape</div>
+        <div class="info-banner-body">Scraping visits each school's website and looks for art teacher names and contact info. Pick a state, then click <b>Start Scraping</b>. Large states like Texas can take 1–2 days to finish — you can close this tab and come back later, the scrape keeps running in the background. Results appear in the <b>Art Teachers</b> tab as schools are processed. Only one state can be scraped at a time.</div>
+      </div>
+    </div>
     <div class="scrape-form">
-      <h3>Select states to scrape</h3>
-      <div class="state-grid" id="scrape-state-grid"></div>
+      <h3>Select state to scrape</h3>
+      <div class="scrape-state-select">
+        <select id="scrape-state-select" class="controls">
+          <option value="">— choose a state —</option>
+        </select>
+      </div>
       <div class="scrape-options">
         <label>
           <input type="checkbox" id="scrape-rescrape">
@@ -383,14 +496,15 @@
   ];
 
   function populateStatePickers() {
-    const teacherSel = document.getElementById('teacher-state');
-    const schoolSel = document.getElementById('school-state');
-    const grid = document.getElementById('scrape-state-grid');
+    const teacherSel    = document.getElementById('teacher-state');
+    const artSchoolSel  = document.getElementById('artschool-state');
+    const schoolSel     = document.getElementById('school-state');
+    const scrapeSel     = document.getElementById('scrape-state-select');
     for (const [abbr, name] of US_STATES) {
       teacherSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
+      artSchoolSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
       schoolSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
-      grid.insertAdjacentHTML('beforeend',
-        `<label class="state-chip"><input type="checkbox" name="scrape-state" value="${abbr}" ${abbr === 'TX' ? 'checked' : ''}> ${name}</label>`);
+      scrapeSel.insertAdjacentHTML('beforeend', `<option value="${abbr}">${name}</option>`);
     }
   }
   populateStatePickers();
@@ -406,9 +520,11 @@
   function switchTab(tab, el) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     el.classList.add('active');
-    document.getElementById('panel-teachers').style.display = tab === 'teachers' ? '' : 'none';
-    document.getElementById('panel-schools').style.display  = tab === 'schools'  ? '' : 'none';
-    document.getElementById('panel-scrape').style.display   = tab === 'scrape'   ? '' : 'none';
+    document.getElementById('panel-teachers').style.display   = tab === 'teachers'   ? '' : 'none';
+    document.getElementById('panel-artschools').style.display = tab === 'artschools' ? '' : 'none';
+    document.getElementById('panel-schools').style.display    = tab === 'schools'    ? '' : 'none';
+    document.getElementById('panel-scrape').style.display     = tab === 'scrape'     ? '' : 'none';
+    if (tab === 'artschools') loadArtSchools();
     if (tab === 'schools') loadSchools();
     if (tab === 'scrape')  pollScrapeStatus();
   }
@@ -416,13 +532,13 @@
   // ---- Teachers ----
   async function loadTeachers(page) {
     if (page) teacherPage = page;
-    const q     = document.getElementById('teacher-search').value;
-    const state = document.getElementById('teacher-state').value;
-    const email = document.getElementById('teacher-only-email').checked ? '1' : '0';
-    const wrap  = document.getElementById('teacher-table-wrap');
+    const q          = document.getElementById('teacher-search').value;
+    const state      = document.getElementById('teacher-state').value;
+    const addedSince = document.getElementById('teacher-added-since').value;
+    const wrap       = document.getElementById('teacher-table-wrap');
     wrap.innerHTML = '<div class="loading">Loading…</div>';
 
-    const res  = await fetch(`/api/teachers?q=${encodeURIComponent(q)}&state=${state}&only_email=${email}&page=${teacherPage}`);
+    const res  = await fetch(`/api/teachers?q=${encodeURIComponent(q)}&state=${state}&added_since=${encodeURIComponent(addedSince)}&page=${teacherPage}`);
     const data = await res.json();
 
     if (!data.rows.length) {
@@ -430,8 +546,7 @@
         <div class="empty-state">
           <div class="icon">🎨</div>
           <p>No art teachers found yet.<br>
-          Run the scraper to crawl school websites:<br>
-          <code>python main.py scrape --states KS --limit 50</code></p>
+          Use the Scrape tab to find teachers.</p>
         </div>`;
       document.getElementById('teacher-pagination').innerHTML = '';
       return;
@@ -442,7 +557,7 @@
       <table>
         <thead><tr>
           <th>Teacher</th><th>Title</th><th>Email</th>
-          <th>School</th><th>City</th><th>State</th><th>District</th><th>Website</th>
+          <th>School</th><th>City</th><th>State</th><th>District</th><th>Website</th><th></th>
         </tr></thead>
         <tbody>
         ${data.rows.map(r => `
@@ -455,6 +570,7 @@
             <td>${esc(r.state)}</td>
             <td>${esc(r.district_name || '')}</td>
             <td>${websiteLink(r.email, r.resolution_method, r.website_url)}</td>
+            <td><button class="btn-delete" onclick="deleteTeacher('${r.ids.join(',')}', this)">Delete</button></td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -464,6 +580,49 @@
   }
 
   // ---- Schools ----
+  let artSchoolPage = 1;
+  async function loadArtSchools(page) {
+    if (page) artSchoolPage = page;
+    const q     = document.getElementById('artschool-search').value;
+    const state = document.getElementById('artschool-state').value;
+    const wrap  = document.getElementById('artschool-table-wrap');
+    wrap.innerHTML = '<div class="loading">Loading…</div>';
+
+    const res  = await fetch(`/api/art-schools?q=${encodeURIComponent(q)}&state=${state}&page=${artSchoolPage}`);
+    const data = await res.json();
+
+    if (!data.rows.length) {
+      wrap.innerHTML = '<div class="empty-state"><div class="icon">🖼️</div><p>No art schools found for the selected filters.</p></div>';
+      document.getElementById('artschool-pagination').innerHTML = '';
+      return;
+    }
+
+    const html = `
+      <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>School</th><th>City</th><th>State</th><th>District</th>
+          <th>Website</th><th>Scraped</th><th>Teachers Found</th><th></th>
+        </tr></thead>
+        <tbody>
+        ${data.rows.map(r => `
+          <tr>
+            <td>${esc(r.school_name)}</td>
+            <td>${esc(r.city || '')}</td>
+            <td>${esc(r.state)}</td>
+            <td>${esc(r.district_name || '')}</td>
+            <td>${r.website_url ? `<a href="${esc(r.website_url)}" target="_blank" rel="noopener">${esc(r.website_url)}</a>` : badge('no url', 'gray')}</td>
+            <td>${r.scraped ? badge('done', 'green') : badge('pending', 'orange')}</td>
+            <td>${r.teacher_count > 0 ? `<b>${r.teacher_count}</b>` : '—'}</td>
+            <td><button class="btn-delete" onclick="deleteSchool(${r.id}, this)">Delete</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>`;
+    wrap.innerHTML = html;
+    renderPagination('artschool-pagination', data.total, data.per_page, artSchoolPage, loadArtSchools);
+  }
+
   async function loadSchools(page) {
     if (page) schoolPage = page;
     const q      = document.getElementById('school-search').value;
@@ -486,7 +645,7 @@
       <table>
         <thead><tr>
           <th>School</th><th>City</th><th>State</th><th>District</th>
-          <th>Website</th><th>Scraped</th>
+          <th>Website</th><th>Scraped</th><th></th>
         </tr></thead>
         <tbody>
         ${data.rows.map(r => `
@@ -497,6 +656,7 @@
             <td>${esc(r.district_name || '')}</td>
             <td>${r.website_url ? `<a href="${esc(r.website_url)}" target="_blank" rel="noopener">${esc(r.website_url)}</a>` : badge('no url', 'gray')}</td>
             <td>${r.scraped ? badge('done', 'green') : badge('pending', 'orange')}</td>
+            <td><button class="btn-delete" onclick="deleteSchool(${r.id}, this)">Delete</button></td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -516,8 +676,7 @@
 
   function exportTeachers() {
     const state = document.getElementById('teacher-state').value;
-    const email = document.getElementById('teacher-only-email').checked ? '1' : '0';
-    window.location = `/export/teachers.xlsx?state=${state}&only_email=${email}`;
+    window.location = `/export/teachers.xlsx?state=${state}`;
   }
 
   function exportSchools() {
@@ -554,8 +713,9 @@
   let scrapePoller = null;
 
   async function startScrape() {
-    const states = [...document.querySelectorAll('input[name="scrape-state"]:checked')].map(el => el.value);
-    if (!states.length) { alert('Select at least one state.'); return; }
+    const state = document.getElementById('scrape-state-select').value;
+    if (!state) { alert('Select a state first.'); return; }
+    const states = [state];
     const rescrape = document.getElementById('scrape-rescrape').checked;
 
     const res = await fetch('/api/scrape/start', {
@@ -564,8 +724,13 @@
       body: JSON.stringify({ states, rescrape }),
     });
     if (!res.ok) {
-      const err = await res.json();
-      alert(err.error || 'Failed to start scrape.');
+      if (res.status === 409) {
+        const status = await (await fetch('/api/scrape/status')).json();
+        showScrapeBusyModal(status.states || []);
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to start scrape.');
+      }
       return;
     }
     document.getElementById('scrape-progress').style.display = '';
@@ -595,6 +760,28 @@
     }
   }
 
+  let _tickTimer = null;
+  let _scrapeStartedAt = null;  // ms timestamp
+  let _scrapeEta = null;        // seconds remaining, counted down locally
+
+  function startTicker() {
+    clearInterval(_tickTimer);
+    _tickTimer = setInterval(() => {
+      if (!_scrapeStartedAt) return;
+      const elapsed = (Date.now() - _scrapeStartedAt) / 1000;
+      document.getElementById('prog-elapsed').textContent = fmtTime(elapsed);
+      if (_scrapeEta !== null) {
+        _scrapeEta = Math.max(0, _scrapeEta - 1);
+        document.getElementById('prog-eta').textContent = _scrapeEta > 0 ? fmtTime(_scrapeEta) : 'almost done…';
+      }
+    }, 1000);
+  }
+
+  function stopTicker() {
+    clearInterval(_tickTimer);
+    _tickTimer = null;
+  }
+
   function startScrapePoller() {
     clearInterval(scrapePoller);
     scrapePoller = setInterval(pollScrapeStatus, 2000);
@@ -608,6 +795,12 @@
     } catch { return; }
 
     const { running, current, total, current_school, last_status, elapsed, eta, error, finished_at } = data;
+
+    // Sync local timer with server
+    if (data.started_at) {
+      _scrapeStartedAt = data.started_at * 1000;
+    }
+    if (eta != null) _scrapeEta = eta;
 
     if (total > 0) {
       const pct = Math.round((current / total) * 100);
@@ -623,10 +816,12 @@
       document.getElementById('scrape-btn').disabled = true;
       document.getElementById('scrape-btn').textContent = 'Scraping…';
       document.getElementById('stop-btn').style.display = '';
+      startTicker();
     }
 
-    document.getElementById('prog-elapsed').textContent = elapsed ? fmtTime(elapsed) : '—';
-    document.getElementById('prog-eta').textContent     = eta     ? fmtTime(eta)     : (running ? 'calculating…' : '—');
+    if (!eta) {
+      document.getElementById('prog-eta').textContent = running ? 'calculating…' : '—';
+    }
 
     if (current_school) {
       const statusLabel = last_status && last_status !== 'scraping' ? ` — ${last_status}` : '';
@@ -635,6 +830,9 @@
 
     if (!running) {
       clearInterval(scrapePoller);
+      stopTicker();
+      _scrapeStartedAt = null;
+      _scrapeEta = null;
       document.getElementById('scrape-btn').disabled = false;
       document.getElementById('scrape-btn').textContent = 'Start Scraping';
       document.getElementById('stop-btn').style.display = 'none';
@@ -643,13 +841,22 @@
         if (error) {
           resultEl.innerHTML = `<div class="scrape-done err">Error: ${esc(error)}</div>`;
         } else {
-          resultEl.innerHTML = `<div class="scrape-done ok">Scrape complete — ${(total||0).toLocaleString()} schools processed.</div>`;
+          const n = data.new_teachers || 0;
+          const stateLabel = (data.states || []).join(', ') || 'selected states';
+          const iso = data.started_at_iso || '';
+          resultEl.innerHTML = `
+            <div class="scrape-done ok">
+              Scrape complete — ${(total||0).toLocaleString()} schools processed.
+              ${n > 0
+                ? `Found <b>${n.toLocaleString()}</b> new teacher${n === 1 ? '' : 's'}.
+                   <button class="btn-view-results" onclick="viewNewTeachers('${esc((data.states||[])[0]||'')}', '${esc(iso)}')">View new teachers →</button>`
+                : 'No new teachers found this run.'}
+            </div>`;
         }
         // Refresh stats
         const s = await (await fetch('/api/stats')).json();
         document.getElementById('stat-scraped').textContent  = s.scraped.toLocaleString();
         document.getElementById('stat-teachers').textContent = s.teachers_total.toLocaleString();
-        document.getElementById('stat-emails').textContent   = s.teachers_with_email.toLocaleString();
       }
     }
   }
@@ -663,10 +870,74 @@
     return `${h}h ${rm}m`;
   }
 
+  // ---- View new teachers after scrape ----
+  function viewNewTeachers(state, addedSinceIso) {
+    if (state) document.getElementById('teacher-state').value = state;
+    const sel = document.getElementById('teacher-added-since');
+    // Add a hidden option for this exact ISO timestamp if not already present
+    let opt = sel.querySelector(`option[value="${addedSinceIso}"]`);
+    if (!opt && addedSinceIso) {
+      opt = document.createElement('option');
+      opt.value = addedSinceIso;
+      opt.textContent = 'This scrape session';
+      sel.appendChild(opt);
+    }
+    if (addedSinceIso) sel.value = addedSinceIso;
+    switchTab('teachers', document.querySelector('.tab'));
+    loadTeachers(1);
+  }
+
+  // ---- Delete ----
+  async function deleteTeacher(id, btn) {
+    if (!confirm('Delete this teacher?')) return;
+    btn.disabled = true;
+    const res = await fetch(`/api/teachers/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      btn.closest('tr').remove();
+    } else {
+      btn.disabled = false;
+      alert('Delete failed.');
+    }
+  }
+
+  async function deleteSchool(id, btn) {
+    if (!confirm('Delete this school and all its teachers?')) return;
+    btn.disabled = true;
+    const res = await fetch(`/api/schools/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      btn.closest('tr').remove();
+    } else {
+      btn.disabled = false;
+      alert('Delete failed.');
+    }
+  }
+
+  // ---- Scrape-busy modal ----
+  function showScrapeBusyModal(states) {
+    const stateLabel = (states || []).join(', ') || 'another state';
+    document.getElementById('modal-busy-state').textContent = stateLabel;
+    document.getElementById('modal-scrape-busy').classList.add('visible');
+  }
+  function closeScrapeBusyModal() {
+    document.getElementById('modal-scrape-busy').classList.remove('visible');
+  }
+
   // Initial load
   loadTeachers();
   // Resume progress bar if a scrape is already running
   pollScrapeStatus();
 </script>
+<!-- Scrape-busy modal -->
+<div class="modal-overlay" id="modal-scrape-busy" onclick="if(event.target===this)closeScrapeBusyModal()">
+  <div class="modal-box">
+    <div class="modal-icon">⏳</div>
+    <div class="modal-title">Scrape Already in Progress</div>
+    <div class="modal-body">
+      Someone is already scraping <b><span id="modal-busy-state"></span></b> right now.<br><br>
+      Only one scrape can run at a time. Switch to the <b>Scrape tab</b> to watch their progress, then start your own when it finishes.
+    </div>
+    <button class="modal-close" onclick="closeScrapeBusyModal(); switchTab('scrape', document.querySelector('.tab'))">Watch Progress</button>
+  </div>
+</div>
 </body>
 </html>

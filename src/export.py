@@ -10,7 +10,7 @@ import logging
 import sys
 from pathlib import Path
 
-from .db import get_conn
+from .db import get_conn, group_teacher_rows
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +36,8 @@ def export_csv(states: list[str], out_path: str | None = None) -> int:
             """.format(",".join("?" * len(states))),
             states,
         ).fetchall()
+
+    rows = group_teacher_rows(rows)
 
     if not rows:
         log.warning("No results found for states: %s", states)
