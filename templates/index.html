@@ -204,6 +204,22 @@
     }
     .btn-delete:hover { background: #fdecea; border-color: #e57373; }
 
+    /* Info banners */
+    .info-banner {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      background: #f0f4f9;
+      border: 1px solid #d0dce9;
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin-bottom: 20px;
+    }
+    .info-banner-icon { font-size: 1.6rem; line-height: 1; flex-shrink: 0; margin-top: 2px; }
+    .info-banner-title { font-size: 0.9rem; font-weight: 700; color: #1a2942; margin-bottom: 4px; }
+    .info-banner-body { font-size: 0.83rem; color: #4a5568; line-height: 1.6; }
+    .info-banner-body b { color: #1a2942; }
+
     /* Scrape panel */
     .scrape-form { max-width: 480px; }
     .scrape-form h3 { font-size: 0.95rem; font-weight: 600; color: #1a2942; margin-bottom: 10px; }
@@ -375,6 +391,13 @@
 
   <!-- Schools panel -->
   <div class="panel" id="panel-schools" style="display:none">
+    <div class="info-banner">
+      <div class="info-banner-icon">🏫</div>
+      <div>
+        <div class="info-banner-title">All Schools</div>
+        <div class="info-banner-body">This is the full list of public schools loaded into the system. <b>Scraped: Done</b> means we've already visited that school's website looking for art teachers. <b>Scraped: Pending</b> means it hasn't been checked yet — run a scrape to process it. Filter by state or check <b>Has website</b> to focus on schools we can actually scrape.</div>
+      </div>
+    </div>
     <div class="controls">
       <input type="search" id="school-search" placeholder="Search school, city, district…" oninput="debounce(loadSchools)">
       <select id="school-state" onchange="loadSchools()">
@@ -393,6 +416,13 @@
 
   <!-- Scrape panel -->
   <div class="panel" id="panel-scrape" style="display:none">
+    <div class="info-banner">
+      <div class="info-banner-icon">🔍</div>
+      <div>
+        <div class="info-banner-title">Scrape</div>
+        <div class="info-banner-body">Scraping visits each school's website and looks for art teacher names and contact info. Pick a state, then click <b>Start Scraping</b>. Large states like Texas can take 1–2 days to finish — you can close this tab and come back later, the scrape keeps running in the background. Results appear in the <b>Art Teachers</b> tab as schools are processed. Only one state can be scraped at a time.</div>
+      </div>
+    </div>
     <div class="scrape-form">
       <h3>Select state to scrape</h3>
       <div class="scrape-state-select">
