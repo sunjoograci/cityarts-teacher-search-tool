@@ -21,7 +21,7 @@ import zipfile
 from pathlib import Path
 from typing import Iterator
 
-from .db import get_conn, init_db
+from .db import get_conn, init_db, smart_title_case
 
 log = logging.getLogger(__name__)
 
@@ -354,9 +354,9 @@ def ingest_schools(
             if not _is_middle_or_high(row):
                 continue
             nces_id = row.get("NCESSCH", "").strip()
-            school_name = row.get("SCH_NAME", "").strip()
-            city = row.get("LCITY", "").strip()
-            district_name = row.get("LEA_NAME", "").strip()
+            school_name = smart_title_case(row.get("SCH_NAME", "").strip())
+            city = smart_title_case(row.get("LCITY", "").strip())
+            district_name = smart_title_case(row.get("LEA_NAME", "").strip())
             website_url = _normalize_url(row.get("WEBSITE", ""))
             school_level = (row.get("SCHOOL_LEVEL") or "").strip() or None
             arts = 1 if _is_arts_school(school_name) else 0

@@ -1,5 +1,6 @@
 """SQLite database setup and helpers."""
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -12,6 +13,43 @@ def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# Common school/district abbreviations that should stay uppercase rather than
+# be title-cased (e.g. "ABILENE ISD" -> "Abilene ISD", not "Abilene Isd").
+_SHOUTY_KEEP_UPPER = {
+    "II", "III", "IV", "V", "VI",
+    "HS", "MS", "ES", "PK", "DAEP",
+    "ISD", "CISD", "USD", "LEA", "NCES",
+}
+
+_MC_NAME_RE = re.compile(r"\bMc([a-z])")
+
+
+def _looks_shouty(s: str) -> bool:
+    """True if s has at least one letter and no lowercase letters —
+    i.e. it looks like ALL-CAPS text rather than intentional mixed case."""
+    return bool(re.search(r"[A-Z]", s)) and not re.search(r"[a-z]", s)
+
+
+def smart_title_case(s: str | None) -> str | None:
+    """Convert ALL-CAPS strings to normal title case.
+
+    NCES's raw school data (and some district staff directories) publish
+    names in ALL CAPS. Strings that already have lowercase letters are
+    assumed to be normally formatted already and are left untouched, so
+    this never mangles legitimately mixed-case input.
+    """
+    if not s or not _looks_shouty(s):
+        return s
+    titled = s.title()
+    titled = re.sub(
+        r"[A-Za-z][A-Za-z'-]*",
+        lambda m: m.group(0).upper() if m.group(0).upper() in _SHOUTY_KEEP_UPPER else m.group(0),
+        titled,
+    )
+    titled = _MC_NAME_RE.sub(lambda m: "Mc" + m.group(1).upper(), titled)
+    return titled
 
 
 def group_teacher_rows(rows) -> list[dict]:

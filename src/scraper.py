@@ -19,7 +19,7 @@ from typing import NamedTuple
 import aiohttp
 from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PWTimeout
 
-from .db import get_conn
+from .db import get_conn, smart_title_case
 
 log = logging.getLogger(__name__)
 
@@ -117,17 +117,36 @@ class StaffRecord(NamedTuple):
 # last name like "Smith-Jones" in half.
 _NAME_TITLE_SPLIT_RE = re.compile(r"\s*,\s*|\s*:\s*|\s+[-–—]\s+")
 
+# Institutional/navigational words that show up in nav menus, breadcrumbs, and
+# page headers — never in an actual person's name or job title. Schools whose
+# own name contains an art keyword (e.g. "... Academy of Fine Arts") are
+# especially prone to this: every nav link and page title on the site matches
+# ART_TITLE_KEYWORDS, so this filters out that site furniture specifically.
+_JUNK_PHRASE_RE = re.compile(
+    r"\b(directory|conservatory|conservatories|academy|sitemap|quick links?|"
+    r"main menu|navigation|login|calendar|newsletter)\b",
+    re.IGNORECASE,
+)
+
 
 def _looks_like_name(candidate: str) -> bool:
-    """Reject obvious non-names (badges like "1 Year", "K-5", stray labels)
-    that would otherwise pass a naive word-count check."""
+    """Reject obvious non-names (badges like "1 Year", "K-5", stray labels,
+    nav/menu text) that would otherwise pass a naive word-count check."""
     words = candidate.split()
     return (
         2 <= len(words) <= 5
         and len(candidate) <= 60
         and not any(ch.isdigit() for ch in candidate)
+        and not _JUNK_PHRASE_RE.search(candidate)
         and not _is_art_teacher(candidate)
     )
+
+
+def _is_valid_art_title(title: str) -> bool:
+    """Like _is_art_teacher, but also rejects institutional/navigational
+    phrases (e.g. "Fine Arts Conservatories", "... Academy of Fine Arts")
+    that merely mention an art keyword without being an actual job title."""
+    return _is_art_teacher(title) and not _JUNK_PHRASE_RE.search(title)
 
 
 def _split_name_title(line: str) -> tuple[str, str] | None:
@@ -362,7 +381,7 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
     for item in semantic:
         name = item.get("name", "").strip()
         title = _TITLE_CLEANUP_RE.sub("", item.get("title", "")).strip()
-        if not _is_art_teacher(title):
+        if not _is_valid_art_title(title):
             continue
         if not _looks_like_name(name):
             continue
@@ -395,7 +414,7 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
             name_candidate = title_candidate = None
             for line in lines:
                 split = _split_name_title(line)
-                if split and _is_art_teacher(split[1]):
+                if split and _is_valid_art_title(split[1]):
                     name_candidate, title_candidate = split
                     break
             if name_candidate is None:
@@ -403,7 +422,7 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
                     continue
                 name_candidate = lines[0]
                 title_candidate = _TITLE_CLEANUP_RE.sub("", " ".join(lines[1:3])).strip()
-                if not _is_art_teacher(title_candidate):
+                if not _is_valid_art_title(title_candidate):
                     continue
             if not _looks_like_name(name_candidate):
                 continue
@@ -430,10 +449,10 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
             lines = [l.strip() for l in surrounding.splitlines() if l.strip()]
             for i, line in enumerate(lines):
                 split = _split_name_title(line)
-                if split and _is_art_teacher(split[1]):
+                if split and _is_valid_art_title(split[1]):
                     records.append(StaffRecord(name=split[0], title=split[1], email=email))
                     continue
-                if _is_art_teacher(line):
+                if _is_valid_art_title(line):
                     name = lines[i - 1] if i > 0 else ""
                     if _looks_like_name(name):
                         records.append(StaffRecord(name=name, title=line, email=email))
@@ -443,7 +462,7 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
         all_lines = [l.strip() for l in text.splitlines() if l.strip()]
         for i, line in enumerate(all_lines):
             split = _split_name_title(line)
-            if split and _is_art_teacher(split[1]):
+            if split and _is_valid_art_title(split[1]):
                 name, title = split
                 context_block = " ".join(all_lines[max(0, i - 1):i + 2])
                 email_matches = EMAIL_RE.findall(context_block)
@@ -453,7 +472,7 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
                     email=email_matches[0] if email_matches else None,
                 ))
                 continue
-            if _is_art_teacher(line):
+            if _is_valid_art_title(line):
                 for j in range(i - 1, max(i - 4, -1), -1):
                     candidate = all_lines[j]
                     if _looks_like_name(candidate):
@@ -717,12 +736,14 @@ def save_staff(school_id: int, records: list[StaffRecord]) -> int:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with get_conn() as conn:
         for r in records:
+            name = smart_title_case(r.name)
+            title = smart_title_case(r.title)
             conn.execute(
                 """
                 INSERT OR IGNORE INTO staff (school_id, teacher_name, title, email, resolution_method, added_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (school_id, r.name, r.title, r.email, "scraped" if r.email else "unresolved", now),
+                (school_id, name, title, r.email, "scraped" if r.email else "unresolved", now),
             )
             if conn.execute("SELECT changes()").fetchone()[0]:
                 saved += 1
