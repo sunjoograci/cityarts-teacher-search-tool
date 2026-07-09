@@ -118,6 +118,18 @@ class StaffRecord(NamedTuple):
 _NAME_TITLE_SPLIT_RE = re.compile(r"\s*,\s*|\s*:\s*|\s+[-–—]\s+")
 
 
+def _looks_like_name(candidate: str) -> bool:
+    """Reject obvious non-names (badges like "1 Year", "K-5", stray labels)
+    that would otherwise pass a naive word-count check."""
+    words = candidate.split()
+    return (
+        2 <= len(words) <= 5
+        and len(candidate) <= 60
+        and not any(ch.isdigit() for ch in candidate)
+        and not _is_art_teacher(candidate)
+    )
+
+
 def _split_name_title(line: str) -> tuple[str, str] | None:
     """Split a single line that packs both name and title together, e.g.
     "Kayla Kinser, Art" -> ("Kayla Kinser", "Art"). Returns None if `line`
@@ -127,9 +139,7 @@ def _split_name_title(line: str) -> tuple[str, str] | None:
     if len(parts) != 2:
         return None
     name, title = parts[0].strip(), parts[1].strip()
-    if not title or not (2 <= len(name.split()) <= 5) or len(name) > 60:
-        return None
-    if _is_art_teacher(name):
+    if not title or not _looks_like_name(name):
         return None
     return name, title
 
@@ -354,7 +364,7 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
         title = _TITLE_CLEANUP_RE.sub("", item.get("title", "")).strip()
         if not _is_art_teacher(title):
             continue
-        if len(name.split()) < 2 or len(name) > 60:
+        if not _looks_like_name(name):
             continue
         records.append(StaffRecord(name=name, title=title, email=item.get("email") or None))
 
@@ -380,17 +390,22 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
             lines = [l.strip() for l in raw.splitlines() if l.strip()]
             if not lines:
                 continue
-            split = _split_name_title(lines[0])
-            if split and _is_art_teacher(split[1]):
-                name_candidate, title_candidate = split
-            elif len(lines) >= 2:
+            # A "Name, Title" pair can appear packed on any line of the block,
+            # not necessarily the first (e.g. a "1 Year" tenure badge before it).
+            name_candidate = title_candidate = None
+            for line in lines:
+                split = _split_name_title(line)
+                if split and _is_art_teacher(split[1]):
+                    name_candidate, title_candidate = split
+                    break
+            if name_candidate is None:
+                if len(lines) < 2:
+                    continue
                 name_candidate = lines[0]
                 title_candidate = _TITLE_CLEANUP_RE.sub("", " ".join(lines[1:3])).strip()
                 if not _is_art_teacher(title_candidate):
                     continue
-            else:
-                continue
-            if len(name_candidate.split()) < 2 or len(name_candidate) > 60:
+            if not _looks_like_name(name_candidate):
                 continue
             email = item_emails[0] if item_emails else None
             if not email:
@@ -420,7 +435,7 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
                     continue
                 if _is_art_teacher(line):
                     name = lines[i - 1] if i > 0 else ""
-                    if len(name.split()) >= 2:
+                    if _looks_like_name(name):
                         records.append(StaffRecord(name=name, title=line, email=email))
 
     # Strategy 4: Plain-text line scan — art title line, name on a preceding line.
@@ -441,8 +456,7 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
             if _is_art_teacher(line):
                 for j in range(i - 1, max(i - 4, -1), -1):
                     candidate = all_lines[j]
-                    words = candidate.split()
-                    if 2 <= len(words) <= 5 and len(candidate) <= 50 and not _is_art_teacher(candidate):
+                    if _looks_like_name(candidate):
                         context_block = " ".join(all_lines[max(0, i - 2):i + 3])
                         email_matches = EMAIL_RE.findall(context_block)
                         records.append(StaffRecord(
@@ -532,8 +546,7 @@ async def _extract_staff_permissive(page: Page) -> list[StaffRecord]:
         for line in lines:
             if "@" in line:
                 continue
-            words = line.split()
-            if 2 <= len(words) <= 5 and len(line) <= 50:
+            if _looks_like_name(line):
                 records.append(StaffRecord(name=line, title="Visual Arts", email=email))
                 break
 
@@ -559,14 +572,18 @@ async def _extract_staff_permissive(page: Page) -> list[StaffRecord]:
             lines = [l.strip() for l in raw.splitlines() if l.strip()]
             if not lines:
                 continue
-            split = _split_name_title(lines[0])
-            if split:
-                name_candidate, title = split
-            else:
+            # A "Name, Title" pair can appear packed on any line of the block,
+            # not necessarily the first (e.g. a "1 Year" tenure badge before it).
+            name_candidate = title = None
+            for line in lines:
+                split = _split_name_title(line)
+                if split:
+                    name_candidate, title = split
+                    break
+            if name_candidate is None:
                 name_candidate = lines[0]
                 title = _TITLE_CLEANUP_RE.sub("", lines[1]).strip() if len(lines) > 1 else "Visual Arts"
-            words = name_candidate.split()
-            if len(words) < 2 or len(name_candidate) > 60 or "@" in name_candidate:
+            if "@" in name_candidate or not _looks_like_name(name_candidate):
                 continue
             email = item_emails[0] if item_emails else None
             if not email:
