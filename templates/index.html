@@ -262,6 +262,38 @@
     }
     .scrape-done.ok { background: #e8f5e9; color: #256427; }
     .scrape-done.err { background: #fdecea; color: #b71c1c; }
+    /* Scrape-busy modal */
+    .modal-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.visible { display: flex; }
+    .modal-box {
+      background: #fff;
+      border-radius: 12px;
+      padding: 32px 28px;
+      max-width: 420px;
+      width: 90%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+      text-align: center;
+    }
+    .modal-icon { font-size: 2.2rem; margin-bottom: 12px; }
+    .modal-title { font-size: 1.1rem; font-weight: 700; color: #1a2942; margin-bottom: 10px; }
+    .modal-body { font-size: 0.9rem; color: #4a5568; line-height: 1.6; margin-bottom: 22px; }
+    .modal-body b { color: #1a2942; }
+    .modal-close {
+      padding: 9px 28px;
+      background: #1a3c5e; color: #fff;
+      border: none; border-radius: 6px;
+      font-size: 0.9rem; font-weight: 600;
+      cursor: pointer;
+    }
+    .modal-close:hover { background: #14304e; }
+
     .btn-view-results {
       margin-left: 10px;
       padding: 3px 12px;
@@ -316,6 +348,13 @@
 
   <!-- Teachers panel -->
   <div class="panel" id="panel-teachers">
+    <div class="info-banner">
+      <div class="info-banner-icon">🎨</div>
+      <div>
+        <div class="info-banner-title">Art Teachers</div>
+        <div class="info-banner-body">This tab shows every art teacher found so far. Search by name, school, or city — or filter by state. Use <b>Download .xlsx</b> to export the list to Excel. New teachers only appear here after a scrape has been run from the <b>Scrape tab</b>.</div>
+      </div>
+    </div>
     <div class="controls">
       <input type="search" id="teacher-search" placeholder="Search name, school, city…" oninput="debounce(loadTeachers)">
       <select id="teacher-state" onchange="loadTeachers()">
@@ -588,8 +627,13 @@
       body: JSON.stringify({ states, rescrape }),
     });
     if (!res.ok) {
-      const err = await res.json();
-      alert(err.error || 'Failed to start scrape.');
+      if (res.status === 409) {
+        const status = await (await fetch('/api/scrape/status')).json();
+        showScrapeBusyModal(status.states || []);
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to start scrape.');
+      }
       return;
     }
     document.getElementById('scrape-progress').style.display = '';
@@ -738,10 +782,32 @@
     }
   }
 
+  // ---- Scrape-busy modal ----
+  function showScrapeBusyModal(states) {
+    const stateLabel = (states || []).join(', ') || 'another state';
+    document.getElementById('modal-busy-state').textContent = stateLabel;
+    document.getElementById('modal-scrape-busy').classList.add('visible');
+  }
+  function closeScrapeBusyModal() {
+    document.getElementById('modal-scrape-busy').classList.remove('visible');
+  }
+
   // Initial load
   loadTeachers();
   // Resume progress bar if a scrape is already running
   pollScrapeStatus();
 </script>
+<!-- Scrape-busy modal -->
+<div class="modal-overlay" id="modal-scrape-busy" onclick="if(event.target===this)closeScrapeBusyModal()">
+  <div class="modal-box">
+    <div class="modal-icon">⏳</div>
+    <div class="modal-title">Scrape Already in Progress</div>
+    <div class="modal-body">
+      Someone is already scraping <b><span id="modal-busy-state"></span></b> right now.<br><br>
+      Only one scrape can run at a time. Switch to the <b>Scrape tab</b> to watch their progress, then start your own when it finishes.
+    </div>
+    <button class="modal-close" onclick="closeScrapeBusyModal(); switchTab('scrape', document.querySelector('.tab'))">Watch Progress</button>
+  </div>
+</div>
 </body>
 </html>
