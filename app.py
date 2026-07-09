@@ -468,4 +468,5 @@ def export_schools_xlsx():
 if __name__ == "__main__":
     if not DB_PATH.exists():
         print("No database found. Run: python main.py ingest --states KS")
-    app.run(debug=True, port=5000, threaded=True, use_reloader=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=False, host="0.0.0.0", port=port, threaded=True, use_reloader=False)
