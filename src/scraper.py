@@ -32,59 +32,7 @@ from .db import get_conn
 
 log = logging.getLogger(__name__)
 
-<<<<<<< HEAD
 EMAIL_RE = ed.EMAIL_RE
-=======
-# Paths to try when hunting for a staff directory
-DIRECTORY_PATHS = [
-    "/staff",
-    "/faculty",
-    "/staff-directory",
-    "/faculty-directory",
-    "/contact",
-    "/about/staff",
-    "/about/faculty",
-    "/directory",
-    "/administration",
-    "/our-staff",
-    "/meet-our-staff",
-    "/teachers",
-    "/about-us/staff",
-]
-
-# Paths to try when hunting for a district-level fine arts / visual arts department page
-ARTS_PATHS = [
-    "/fine-arts",
-    "/visual-arts",
-    "/programs/fine-arts",
-    "/programs/visual-arts",
-    "/arts",
-    "/departments/fine-arts",
-    "/departments/visual-arts",
-    "/curriculum/fine-arts",
-    "/fine-arts-department",
-    "/visual-arts-department",
-    "/domain/fine-arts",       # Schoolwires/Blackboard CMS
-    "/domain/visual-arts",
-    "/domain/fine_arts",
-    "/domain/visual_arts",
-    "/page/fine-arts",
-    "/page/visual-arts",
-    "/fine_arts",
-    "/visual_arts",
-]
-
-# Art-related keywords in job title (case-insensitive)
-ART_TITLE_KEYWORDS = re.compile(
-    r"\b(art|fine arts?|visual arts?|studio|drawing|painting|ceramics?|sculpture|photography|printmaking|graphic design)\b",
-    re.IGNORECASE,
-)
-
-# Exclude "art" that appears to be part of a proper name (e.g. "Arthur")
-ART_FALSE_POSITIVES = re.compile(r"\b(arthur|arturo|eart|mcart|smart)\b", re.IGNORECASE)
-
-EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
->>>>>>> e9f2fcf5895baf274623909140806a9371b7fedb
 
 # Text patterns that indicate a "send a message" contact form link
 SEND_MESSAGE_RE = re.compile(
@@ -124,14 +72,11 @@ MISSED_STATUSES = (STATUS_NO_DIRECTORY_FOUND, STATUS_TIMEOUT, STATUS_BLOCKED)
 class StaffRecord:
     name: str
     title: str
-<<<<<<< HEAD
     email: Optional[str] = None
     discipline: str = "unknown"
     email_source: Optional[str] = None
     email_verified: bool = False
     evidence_url: Optional[str] = None
-=======
-    email: str | None
 
 
 # Splits a single "Name, Title" / "Name - Title" / "Name: Title" line in two.
@@ -148,7 +93,7 @@ def _looks_like_name(candidate: str) -> bool:
         2 <= len(words) <= 5
         and len(candidate) <= 60
         and not any(ch.isdigit() for ch in candidate)
-        and not _is_art_teacher(candidate)
+        and not art_classifier.is_art_related(candidate)
     )
 
 
@@ -164,17 +109,6 @@ def _split_name_title(line: str) -> tuple[str, str] | None:
     if not title or not _looks_like_name(name):
         return None
     return name, title
-
-
-def _is_art_teacher(title: str) -> bool:
-    if not title:
-        return False
-    if ART_FALSE_POSITIVES.search(title):
-        art_match = ART_TITLE_KEYWORDS.search(title)
-        if art_match and art_match.group().lower() in ("arthur", "arturo"):
-            return False
-    return bool(ART_TITLE_KEYWORDS.search(title))
->>>>>>> e9f2fcf5895baf274623909140806a9371b7fedb
 
 
 class RobotsCache:
@@ -213,38 +147,24 @@ class RobotsCache:
                 ) as resp:
                     if resp.status == 200:
                         text = await resp.text(errors="replace")
-<<<<<<< HEAD
+                        rp = urllib.robotparser.RobotFileParser()
                         rp.parse(text.splitlines())  # parse() calls self.modified(), setting last_checked
                     elif resp.status in (401, 403):
                         # Mirrors stdlib RobotFileParser.read(): explicit auth
-                        # failure on robots.txt itself -> treat as disallow-all.
-                        rp.disallow_all = True
-                        rp.modified()
-                    elif 400 <= resp.status < 500:
-                        # No robots.txt at this path (404 etc.) -> allow all.
-                        # This is the single most common case on the open web
-                        # (most small sites don't publish one) and MUST set
-                        # last_checked, or can_fetch()'s "not self.last_checked
-                        # -> return False" guard silently blocks everything.
-                        rp.allow_all = True
-                        rp.modified()
-                    else:
-                        # 5xx or unexpected status: transient server issue, not
-                        # a real robots directive — don't penalize the crawl for it.
-                        rp.allow_all = True
-                        rp.modified()
-            except Exception:
-                # Network/timeout error reaching robots.txt — same reasoning:
-                # unknown is not the same as disallowed.
-                rp.allow_all = True
-                rp.modified()
-=======
+                        # failure on robots.txt itself -> disallow-all. Checked
+                        # before the last_checked guard in can_fetch(), so this
+                        # is correct even though .modified() is never called.
                         rp = urllib.robotparser.RobotFileParser()
-                        rp.parse(text.splitlines())
-                    # non-200 (404, 403, ...) → no usable robots.txt → allow all
+                        rp.disallow_all = True
+                    # else (404, other 4xx, 5xx, or a request exception below):
+                    # rp stays None -> can_fetch()/crawl_delay() both treat
+                    # that as allow-all. This is the single most common case
+                    # on the open web (most small sites don't publish a
+                    # robots.txt at all) and must NOT be confused with a
+                    # freshly constructed-but-never-.parse()'d RobotFileParser,
+                    # whose can_fetch() defaults to deny-all via last_checked.
             except Exception:
-                pass  # network error, timeout, decode error → allow all
->>>>>>> e9f2fcf5895baf274623909140806a9371b7fedb
+                pass  # network error, timeout, decode error → rp stays None → allow all
             self._cache[domain] = rp
         return self._cache[domain]
 
@@ -374,39 +294,41 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
             lines = [l.strip() for l in raw.splitlines() if l.strip()]
             if not lines:
                 continue
-<<<<<<< HEAD
-            name_candidate = lines[0]
-            title_candidate = _TITLE_CLEANUP_RE.sub("", " ".join(lines[1:3])).strip()
-            classification = art_classifier.classify(title_candidate)
-            if not permissive and not classification.is_art:
-                continue
-            if len(name_candidate.split()) < 2 or len(name_candidate) > 60:
-                continue
-=======
+            item_emails = item.get("emails", [])
+            cfemails = item.get("cfemails", [])
+            msg_link = item.get("msgLink", "")
             # A "Name, Title" pair can appear packed on any line of the block,
             # not necessarily the first (e.g. a "1 Year" tenure badge before it).
             name_candidate = title_candidate = None
             for line in lines:
                 split = _split_name_title(line)
-                if split and _is_art_teacher(split[1]):
+                if split and art_classifier.is_art_related(split[1]):
                     name_candidate, title_candidate = split
                     break
+            classification = None
             if name_candidate is None:
                 if len(lines) < 2:
                     continue
                 name_candidate = lines[0]
                 title_candidate = _TITLE_CLEANUP_RE.sub("", " ".join(lines[1:3])).strip()
-                if not _is_art_teacher(title_candidate):
+                classification = art_classifier.classify(title_candidate)
+                if not permissive and not classification.is_art:
                     continue
+            else:
+                classification = art_classifier.classify(title_candidate)
             if not _looks_like_name(name_candidate):
                 continue
-            email = item_emails[0] if item_emails else None
-            if not email:
-                block_emails = EMAIL_RE.findall(raw)
-                email = block_emails[0] if block_emails else None
+            raw_email = item_emails[0] if item_emails else ""
+            email, source = _resolve_email(raw_email, cfemails[0] if cfemails else "", raw)
             if not email and msg_link:
-                email = msg_link
-            records.append(StaffRecord(name=name_candidate, title=title_candidate, email=email))
+                email, source = msg_link, None
+            if permissive and not email:
+                continue
+            records.append(StaffRecord(
+                name=name_candidate, title=title_candidate, email=email,
+                discipline=classification.discipline, email_source=source,
+                evidence_url=evidence_url,
+            ))
 
     # Strategy 3: mailto links — use surrounding container text to find name/title.
     if not records:
@@ -423,187 +345,60 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
             lines = [l.strip() for l in surrounding.splitlines() if l.strip()]
             for i, line in enumerate(lines):
                 split = _split_name_title(line)
-                if split and _is_art_teacher(split[1]):
-                    records.append(StaffRecord(name=split[0], title=split[1], email=email))
+                if split and art_classifier.is_art_related(split[1]):
+                    classification = art_classifier.classify(split[1])
+                    records.append(StaffRecord(
+                        name=split[0], title=split[1], email=email,
+                        discipline=classification.discipline, email_source="MAILTO",
+                        evidence_url=evidence_url,
+                    ))
                     continue
-                if _is_art_teacher(line):
+                if art_classifier.is_art_related(line):
                     name = lines[i - 1] if i > 0 else ""
                     if _looks_like_name(name):
-                        records.append(StaffRecord(name=name, title=line, email=email))
+                        classification = art_classifier.classify(line)
+                        records.append(StaffRecord(
+                            name=name, title=line, email=email,
+                            discipline=classification.discipline, email_source="MAILTO",
+                            evidence_url=evidence_url,
+                        ))
 
     # Strategy 4: Plain-text line scan — art title line, name on a preceding line.
     if not records:
+        text = await page.inner_text("body")
         all_lines = [l.strip() for l in text.splitlines() if l.strip()]
         for i, line in enumerate(all_lines):
             split = _split_name_title(line)
-            if split and _is_art_teacher(split[1]):
+            if split and art_classifier.is_art_related(split[1]):
                 name, title = split
                 context_block = " ".join(all_lines[max(0, i - 1):i + 2])
                 email_matches = EMAIL_RE.findall(context_block)
+                classification = art_classifier.classify(title)
                 records.append(StaffRecord(
-                    name=name,
-                    title=title,
+                    name=name, title=title,
                     email=email_matches[0] if email_matches else None,
+                    discipline=classification.discipline,
+                    email_source="MAILTO" if email_matches else None,
+                    evidence_url=evidence_url,
                 ))
                 continue
-            if _is_art_teacher(line):
+            if art_classifier.is_art_related(line):
                 for j in range(i - 1, max(i - 4, -1), -1):
                     candidate = all_lines[j]
                     if _looks_like_name(candidate):
                         context_block = " ".join(all_lines[max(0, i - 2):i + 3])
                         email_matches = EMAIL_RE.findall(context_block)
+                        classification = art_classifier.classify(line)
                         records.append(StaffRecord(
-                            name=candidate,
-                            title=line,
+                            name=candidate, title=line,
                             email=email_matches[0] if email_matches else None,
+                            discipline=classification.discipline,
+                            email_source="MAILTO" if email_matches else None,
+                            evidence_url=evidence_url,
                         ))
                         break
 
     # Deduplicate by name
-    seen: set[str] = set()
-    unique: list[StaffRecord] = []
-    for r in records:
-        key = r.name.lower()
-        if key not in seen:
-            seen.add(key)
-            unique.append(r)
-    return unique
-
-
-async def _find_arts_page(
-    page: Page,
-    base_url: str,
-    session: aiohttp.ClientSession,
-    robots: RobotsCache,
-    cached_path: str | None = None,
-) -> tuple[str | None, str | None]:
-    """Search for a district-level fine arts / visual arts department page.
-
-    Same district-cache/return-shape contract as `_find_directory_page`.
-    """
-    match_fn = lambda text: bool(ARTS_KEYWORD_RE.search(text) and (
-        EMAIL_RE.search(text) or CONTACT_KEYWORD_RE.search(text)
-    ))
-
-    if cached_path:
-        hit = await _probe_paths(session, base_url, [cached_path], match_fn, robots)
-        if hit:
-            log.info("  Found arts dept page at %s (district cache hit: %s)", hit, cached_path)
-            return hit, cached_path
-
-    hit = await _probe_paths(session, base_url, ARTS_PATHS, match_fn, robots)
-    if hit:
-        log.info("  Found arts dept page at %s", hit)
-        return hit, hit[len(base_url.rstrip("/")):]
-
-    # Scan homepage navigation for fine arts / visual arts links
-    try:
-        await page.goto(base_url, timeout=15000, wait_until="domcontentloaded")
-        links = await page.eval_on_selector_all(
-            "a[href]",
-            "els => els.map(e => ({href: e.href, text: e.textContent}))",
-        )
-        for link in links:
-            href = link.get("href", "")
-            text = link.get("text", "").strip()
-            if re.search(r"\b(fine arts?|visual arts?)\b", text, re.I) and _same_domain(href, base_url):
-                full = _resolve_href(href, base_url)
-                log.info("  Found arts nav link: %s (%r)", full, text)
-                return full, None
-    except Exception as exc:
-        log.debug("  Arts nav scan failed: %s", exc)
-
-    return None, None
-
-
-async def _extract_staff_permissive(page: Page) -> list[StaffRecord]:
-    """Extract staff from an arts-specific page — no art-title keyword required.
-
-    Used when the page context (fine arts / visual arts dept) already implies
-    everyone listed is an art teacher.
-    """
-    records: list[StaffRecord] = []
-
-    # Strategy 1: All mailto links — find name in surrounding container text.
-    mailto_links = await page.eval_on_selector_all(
-        "a[href^='mailto:']",
-        """els => els.map(el => ({
-            email: el.href.replace('mailto:', ''),
-            text: (el.closest('tr,li,div,p,td') || el.parentElement).innerText
-        }))""",
-    )
-    for link in mailto_links:
-        email = link.get("email", "")
-        surrounding = link.get("text", "")
-        lines = [l.strip() for l in surrounding.splitlines() if l.strip()]
-        for line in lines:
-            if "@" in line:
-                continue
-            if _looks_like_name(line):
-                records.append(StaffRecord(name=line, title="Visual Arts", email=email))
-                break
-
-    # Strategy 2: Cards / rows that have a name + email (email required).
-    if not records:
-        candidates = await page.eval_on_selector_all(
-            "tr, li, [class*='staff'], [class*='person'], [class*='card'], [class*='teacher'], [class*='faculty']",
-            """els => els.map(el => ({
-                text: el.innerText,
-                emails: [...el.querySelectorAll('a[href^="mailto:"]')].map(a => a.href.replace('mailto:', '')),
-                msgLink: (() => {
-                    const lnk = [...el.querySelectorAll('a[href]')].find(a =>
-                        /send\\s+a?\\s*message|contact\\s+me|email\\s+me|message\\s+me/i.test(a.textContent)
-                    );
-                    return lnk ? lnk.href : '';
-                })()
-            }))""",
-        )
-        for item in candidates:
-            raw = item.get("text", "").strip()
->>>>>>> e9f2fcf5895baf274623909140806a9371b7fedb
-            item_emails = item.get("emails", [])
-            cfemails = item.get("cfemails", [])
-            msg_link = item.get("msgLink", "")
-<<<<<<< HEAD
-            raw_email = item_emails[0] if item_emails else (cfemails[0] if cfemails else "")
-            email, source = _resolve_email(raw_email if item_emails else "", cfemails[0] if cfemails else "", raw)
-            if not email and msg_link:
-                email, source = msg_link, None
-            if permissive and not email:
-                continue
-            records.append(StaffRecord(
-                name=name_candidate, title=title_candidate, email=email,
-                discipline=classification.discipline, email_source=source,
-                evidence_url=evidence_url,
-            ))
-=======
-            lines = [l.strip() for l in raw.splitlines() if l.strip()]
-            if not lines:
-                continue
-            # A "Name, Title" pair can appear packed on any line of the block,
-            # not necessarily the first (e.g. a "1 Year" tenure badge before it).
-            name_candidate = title = None
-            for line in lines:
-                split = _split_name_title(line)
-                if split:
-                    name_candidate, title = split
-                    break
-            if name_candidate is None:
-                name_candidate = lines[0]
-                title = _TITLE_CLEANUP_RE.sub("", lines[1]).strip() if len(lines) > 1 else "Visual Arts"
-            if "@" in name_candidate or not _looks_like_name(name_candidate):
-                continue
-            email = item_emails[0] if item_emails else None
-            if not email:
-                found = EMAIL_RE.findall(raw)
-                email = found[0] if found else None
-            if not email and msg_link:
-                email = msg_link
-            if not email:
-                continue  # require contact info in permissive mode
-            records.append(StaffRecord(name=name_candidate, title=title or "Visual Arts", email=email))
->>>>>>> e9f2fcf5895baf274623909140806a9371b7fedb
-
     seen: set[str] = set()
     unique: list[StaffRecord] = []
     for r in records:
@@ -639,8 +434,8 @@ async def scrape_school(
     robots: RobotsCache | None = None,
     session: aiohttp.ClientSession | None = None,
     district_dir_cache: dict[str, pd.PathCandidate] | None = None,
-) -> tuple[list[StaffRecord], str, list[dict], er.EntityResolution]:
-    """Scrape one school. Returns (records, status, paths_attempted, resolution).
+) -> tuple[list[StaffRecord], str, list[dict], er.EntityResolution, Optional[str]]:
+    """Scrape one school. Returns (records, status, paths_attempted, resolution, directory_url).
 
     Stage 1 runs first: a DISTRICT/PARENT_ORG/PROGRAM/AMBIGUOUS/NOT_A_K12
     verdict short-circuits before any HTTP request other than the NCES
@@ -649,11 +444,11 @@ async def scrape_school(
     resolution = er.resolve(school["school_name"], state_hint=school.get("state"))
 
     if resolution.entity_type == "PARENT_ORG":
-        return [], STATUS_NOT_A_SCHOOL, [], resolution
+        return [], STATUS_NOT_A_SCHOOL, [], resolution, None
     if resolution.entity_type == "AMBIGUOUS":
-        return [], STATUS_AMBIGUOUS_ENTITY, [], resolution
+        return [], STATUS_AMBIGUOUS_ENTITY, [], resolution, None
     if resolution.entity_type == "NOT_A_K12":
-        return [], STATUS_NOT_A_SCHOOL, [], resolution
+        return [], STATUS_NOT_A_SCHOOL, [], resolution, None
 
     url = school["website_url"]
     program_redirected = False
@@ -665,7 +460,7 @@ async def scrape_school(
         # school's own website_url if ingest happened to have one.
 
     if not url:
-        return [], STATUS_NO_DIRECTORY_FOUND, [], resolution
+        return [], STATUS_NO_DIRECTORY_FOUND, [], resolution, None
 
     if robots is None:
         robots = RobotsCache()
@@ -676,7 +471,7 @@ async def scrape_school(
     if not await robots.can_fetch(url, session):
         if own_session:
             await session.close()
-        return [], STATUS_BLOCKED, [], resolution
+        return [], STATUS_BLOCKED, [], resolution, None
 
     district = school.get("district_name")
     cached = district_dir_cache.get(district) if (district_dir_cache and district) else None
@@ -686,7 +481,7 @@ async def scrape_school(
     try:
         dir_url, attempts, source = await find_directory(page, url, session, robots, cached)
         if not dir_url:
-            return [], STATUS_NO_DIRECTORY_FOUND, attempts, resolution
+            return [], STATUS_NO_DIRECTORY_FOUND, attempts, resolution, None
 
         if source in ("sitemap", "cms:blackboard", "cms:finalsite", "cms:edlio", "cms:apptegy",
                       "cms:schoolmessenger", "cms:wordpress") and district_dir_cache is not None and district:
@@ -695,12 +490,12 @@ async def scrape_school(
         try:
             await page.goto(dir_url, timeout=20000, wait_until="domcontentloaded")
         except PWTimeout:
-            return [], STATUS_TIMEOUT, attempts, resolution
+            return [], STATUS_TIMEOUT, attempts, resolution, dir_url
 
         body_text = await page.inner_text("body")
         has_password = await page.query_selector("input[type=password]") is not None
         if acc.looks_like_auth_wall(body_text, has_password):
-            return [], STATUS_AUTH_REQUIRED, attempts, resolution
+            return [], STATUS_AUTH_REQUIRED, attempts, resolution, dir_url
 
         # Stage 3: blank-submit search form (NEISD-style directories).
         if await page.query_selector("form") is not None and not (EMAIL_RE.search(body_text) or STAFF_KEYWORD_RE.search(body_text)):
@@ -760,12 +555,12 @@ async def scrape_school(
             status = STATUS_PROGRAM_REDIRECTED
         else:
             status = STATUS_OK
-        return records, status, attempts, resolution
+        return records, status, attempts, resolution, dir_url
     except PWTimeout:
-        return [], STATUS_TIMEOUT, [], resolution
+        return [], STATUS_TIMEOUT, [], resolution, None
     except Exception as exc:
         log.warning("  Scrape error for %s: %s", url, exc)
-        return [], f"{STATUS_ERROR_PREFIX} {exc}", [], resolution
+        return [], f"{STATUS_ERROR_PREFIX} {exc}", [], resolution, None
     finally:
         await context.close()
         if own_session:
@@ -780,43 +575,39 @@ def save_staff(school_id: int, records: list[StaffRecord]) -> int:
         for r in records:
             conn.execute(
                 """
-<<<<<<< HEAD
                 INSERT OR IGNORE INTO staff
                     (school_id, teacher_name, title, email, resolution_method,
-                     discipline, email_source, email_verified, evidence_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     discipline, email_source, email_verified, evidence_url, added_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     school_id, r.name, r.title, r.email,
                     "scraped" if r.email else "unresolved",
-                    r.discipline, r.email_source, int(bool(r.email_verified)), r.evidence_url,
+                    r.discipline, r.email_source, int(bool(r.email_verified)), r.evidence_url, now,
                 ),
-=======
-                INSERT OR IGNORE INTO staff (school_id, teacher_name, title, email, resolution_method, added_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (school_id, r.name, r.title, r.email, "scraped" if r.email else "unresolved", now),
->>>>>>> e9f2fcf5895baf274623909140806a9371b7fedb
             )
             if conn.execute("SELECT changes()").fetchone()[0]:
                 saved += 1
     return saved
 
 
-def _save_resolution(school_id: int, resolution: er.EntityResolution, status: str, paths_attempted: list[dict]) -> None:
+def _save_resolution(
+    school_id: int, resolution: er.EntityResolution, status: str,
+    paths_attempted: list[dict], directory_url: Optional[str] = None,
+) -> None:
     with get_conn() as conn:
         conn.execute(
             """
             UPDATE schools SET
                 entity_type=?, parent_entity=?, parent_entity_type=?,
                 resolution_confidence=?, resolution_note=?, domain=?,
-                paths_attempted=?, status=?, needs_human_review=?
+                directory_url=?, paths_attempted=?, status=?, needs_human_review=?
             WHERE id=?
             """,
             (
                 resolution.entity_type, resolution.parent_entity, resolution.parent_entity_type,
                 resolution.resolution_confidence, resolution.resolution_note, resolution.domain,
-                json.dumps(paths_attempted), status, int(resolution.needs_human_review),
+                directory_url, json.dumps(paths_attempted), status, int(resolution.needs_human_review),
                 school_id,
             ),
         )
@@ -856,13 +647,9 @@ async def run_scraper(
                 list(states) + list(MISSED_STATUSES),
             ).rowcount
             log.info("Reset %d missed school(s) for re-scraping.", n)
-<<<<<<< HEAD
-        q = "SELECT id, school_name, website_url, district_name, state FROM schools WHERE scraped=0 AND state IN ({})".format(
-=======
-        q = """SELECT id, school_name, website_url, district_name FROM schools
+        q = """SELECT id, school_name, website_url, district_name, state FROM schools
                WHERE scraped=0 AND state IN ({})
                ORDER BY is_arts_school DESC, school_name""".format(
->>>>>>> e9f2fcf5895baf274623909140806a9371b7fedb
             ",".join("?" * len(states))
         )
         rows = conn.execute(q, states).fetchall()
@@ -914,13 +701,13 @@ async def run_scraper(
                              school_dict["school_name"], school_dict["website_url"])
                     if on_progress:
                         on_progress(completed + 1, total, school_dict["school_name"], "scraping")
-                    records, status, paths_attempted, resolution = await scrape_school(
+                    records, status, paths_attempted, resolution, directory_url = await scrape_school(
                         browser, school_dict, robots, session, district_dir_cache,
                     )
                     log.info("  → %d art teacher(s) found. Status: %s (entity: %s)",
                               len(records), status, resolution.entity_type)
                     saved = save_staff(school_dict["id"], records)
-                    _save_resolution(school_dict["id"], resolution, status, paths_attempted)
+                    _save_resolution(school_dict["id"], resolution, status, paths_attempted, directory_url)
                     with get_conn() as conn:
                         conn.execute(
                             "UPDATE schools SET scraped=1, scrape_status=? WHERE id=?",
