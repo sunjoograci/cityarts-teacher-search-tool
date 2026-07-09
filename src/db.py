@@ -14,6 +14,55 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def group_teacher_rows(rows) -> list[dict]:
+    """Merge staff rows for the same teacher across multiple schools in one
+    district into a single row, joining school (and city) names with commas.
+
+    Rows are expected to have at least teacher_name, district_name, state,
+    and school_name keys. Optional id/city/title/email/resolution_method/
+    website_url (or school_website) keys are merged/picked as available.
+    """
+    order = []
+    groups: dict[tuple, dict] = {}
+    for raw in rows:
+        row = dict(raw)
+        key = (row.get("teacher_name"), row.get("district_name"), row.get("state"))
+        g = groups.get(key)
+        if g is None:
+            g = dict(row)
+            g["_schools"] = []
+            g["_cities"] = []
+            g["_ids"] = []
+            g["_has_email"] = False
+            groups[key] = g
+            order.append(key)
+        if row.get("school_name") and row["school_name"] not in g["_schools"]:
+            g["_schools"].append(row["school_name"])
+        if row.get("city") and row["city"] not in g["_cities"]:
+            g["_cities"].append(row["city"])
+        if row.get("id") is not None:
+            g["_ids"].append(row["id"])
+        has_email = bool(row.get("email"))
+        if has_email and not g["_has_email"]:
+            for field in ("title", "email", "resolution_method", "website_url", "school_website"):
+                if field in row:
+                    g[field] = row[field]
+            g["_has_email"] = True
+
+    result = []
+    for key in order:
+        g = groups[key]
+        g["school_name"] = ", ".join(sorted(g["_schools"]))
+        if g["_cities"]:
+            g["city"] = ", ".join(sorted(g["_cities"]))
+        if g["_ids"]:
+            g["ids"] = g["_ids"]
+        for k in ("_schools", "_cities", "_ids", "_has_email"):
+            del g[k]
+        result.append(g)
+    return result
+
+
 def init_db() -> None:
     with get_conn() as conn:
         conn.executescript("""

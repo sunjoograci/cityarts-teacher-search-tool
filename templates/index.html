@@ -570,7 +570,7 @@
             <td>${esc(r.state)}</td>
             <td>${esc(r.district_name || '')}</td>
             <td>${websiteLink(r.email, r.resolution_method, r.website_url)}</td>
-            <td><button class="btn-delete" onclick="deleteTeacher(${r.id}, this)">Delete</button></td>
+            <td><button class="btn-delete" onclick="deleteTeacher('${r.ids.join(',')}', this)">Delete</button></td>
           </tr>`).join('')}
         </tbody>
       </table>

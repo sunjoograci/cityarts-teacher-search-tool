@@ -16,7 +16,7 @@ from pathlib import Path
 import requests
 from flask import Flask, jsonify, render_template, request, send_file
 
-from src.db import DB_PATH, get_conn, init_db
+from src.db import DB_PATH, get_conn, group_teacher_rows, init_db
 
 app = Flask(__name__)
 
@@ -286,27 +286,26 @@ def api_teachers():
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     with get_conn() as conn:
-        total = conn.execute(
-            f"""SELECT COUNT(*) FROM staff s
-                JOIN schools sc ON sc.id = s.school_id {where}""",
-            params,
-        ).fetchone()[0]
         rows = conn.execute(
             f"""SELECT s.id, s.teacher_name, s.title, s.email, s.resolution_method,
                        sc.school_name, sc.city, sc.state, sc.district_name,
                        sc.website_url
                 FROM staff s
                 JOIN schools sc ON sc.id = s.school_id {where}
-                ORDER BY sc.state, sc.school_name, s.teacher_name
-                LIMIT ? OFFSET ?""",
-            params + [per_page, (page - 1) * per_page],
+                ORDER BY sc.state, sc.school_name, s.teacher_name""",
+            params,
         ).fetchall()
+
+    grouped = group_teacher_rows(rows)
+    total = len(grouped)
+    start = (page - 1) * per_page
+    page_rows = grouped[start:start + per_page]
 
     return jsonify({
         "total": total,
         "page": page,
         "per_page": per_page,
-        "rows": [dict(r) for r in rows],
+        "rows": page_rows,
     })
 
 
@@ -353,10 +352,16 @@ def api_art_schools():
     })
 
 
-@app.route("/api/teachers/<int:teacher_id>", methods=["DELETE"])
-def api_delete_teacher(teacher_id):
+@app.route("/api/teachers/<ids>", methods=["DELETE"])
+def api_delete_teacher(ids):
+    id_list = [int(i) for i in ids.split(",") if i.strip().isdigit()]
+    if not id_list:
+        return jsonify({"error": "Invalid id"}), 400
     with get_conn() as conn:
-        changes = conn.execute("DELETE FROM staff WHERE id = ?", (teacher_id,)).rowcount
+        placeholders = ",".join("?" * len(id_list))
+        changes = conn.execute(
+            f"DELETE FROM staff WHERE id IN ({placeholders})", id_list
+        ).rowcount
     if changes:
         return jsonify({"ok": True})
     return jsonify({"error": "Not found"}), 404
@@ -398,6 +403,8 @@ def export_teachers_xlsx():
                 ORDER BY sc.state, sc.school_name, s.teacher_name""",
             params,
         ).fetchall()
+
+    rows = group_teacher_rows(rows)
 
     wb = openpyxl.Workbook()
     ws = wb.active

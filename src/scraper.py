@@ -64,7 +64,7 @@ ARTS_PATHS = [
 
 # Art-related keywords in job title (case-insensitive)
 ART_TITLE_KEYWORDS = re.compile(
-    r"\b(art|visual arts?|studio|drawing|painting|ceramics?|sculpture|photography|printmaking|graphic design)\b",
+    r"\b(art|fine arts?|visual arts?|studio|drawing|painting|ceramics?|sculpture|photography|printmaking|graphic design)\b",
     re.IGNORECASE,
 )
 
@@ -112,6 +112,28 @@ class StaffRecord(NamedTuple):
     email: str | None
 
 
+# Splits a single "Name, Title" / "Name - Title" / "Name: Title" line in two.
+# The dash variant requires surrounding spaces so it doesn't cut a hyphenated
+# last name like "Smith-Jones" in half.
+_NAME_TITLE_SPLIT_RE = re.compile(r"\s*,\s*|\s*:\s*|\s+[-–—]\s+")
+
+
+def _split_name_title(line: str) -> tuple[str, str] | None:
+    """Split a single line that packs both name and title together, e.g.
+    "Kayla Kinser, Art" -> ("Kayla Kinser", "Art"). Returns None if `line`
+    doesn't look like a name+title pair.
+    """
+    parts = _NAME_TITLE_SPLIT_RE.split(line, maxsplit=1)
+    if len(parts) != 2:
+        return None
+    name, title = parts[0].strip(), parts[1].strip()
+    if not title or not (2 <= len(name.split()) <= 5) or len(name) > 60:
+        return None
+    if _is_art_teacher(name):
+        return None
+    return name, title
+
+
 def _is_art_teacher(title: str) -> bool:
     if not title:
         return False
@@ -149,7 +171,14 @@ class RobotsCache:
         async with lock:
             if domain in self._cache:  # someone else fetched it while we waited
                 return self._cache[domain]
-            rp = urllib.robotparser.RobotFileParser()
+            # None means "no usable robots.txt" -> can_fetch()/crawl_delay() both
+            # treat that as allow-all. A freshly constructed but never-.parse()d
+            # RobotFileParser is NOT equivalent: its can_fetch() defaults to
+            # False (deny-all), so leaving it uncached here would silently
+            # block every site whose robots.txt 404s, times out, or fails to
+            # decode (e.g. aiohttp lacking a brotli decoder) even though the
+            # intent below is to allow those.
+            rp: urllib.robotparser.RobotFileParser | None = None
             robots_url = f"{domain}/robots.txt"
             try:
                 async with session.get(
@@ -157,10 +186,11 @@ class RobotsCache:
                 ) as resp:
                     if resp.status == 200:
                         text = await resp.text(errors="replace")
+                        rp = urllib.robotparser.RobotFileParser()
                         rp.parse(text.splitlines())
-                    # 404 → no robots.txt → allow all (leave rp empty)
+                    # non-200 (404, 403, ...) → no usable robots.txt → allow all
             except Exception:
-                pass  # network error or non-200 → allow all
+                pass  # network error, timeout, decode error → allow all
             self._cache[domain] = rp
         return self._cache[domain]
 
@@ -348,11 +378,17 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
             item_emails = item.get("emails", [])
             msg_link = item.get("msgLink", "")
             lines = [l.strip() for l in raw.splitlines() if l.strip()]
-            if len(lines) < 2:
+            if not lines:
                 continue
-            name_candidate = lines[0]
-            title_candidate = _TITLE_CLEANUP_RE.sub("", " ".join(lines[1:3])).strip()
-            if not _is_art_teacher(title_candidate):
+            split = _split_name_title(lines[0])
+            if split and _is_art_teacher(split[1]):
+                name_candidate, title_candidate = split
+            elif len(lines) >= 2:
+                name_candidate = lines[0]
+                title_candidate = _TITLE_CLEANUP_RE.sub("", " ".join(lines[1:3])).strip()
+                if not _is_art_teacher(title_candidate):
+                    continue
+            else:
                 continue
             if len(name_candidate.split()) < 2 or len(name_candidate) > 60:
                 continue
@@ -378,6 +414,10 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
             surrounding = link.get("text", "")
             lines = [l.strip() for l in surrounding.splitlines() if l.strip()]
             for i, line in enumerate(lines):
+                split = _split_name_title(line)
+                if split and _is_art_teacher(split[1]):
+                    records.append(StaffRecord(name=split[0], title=split[1], email=email))
+                    continue
                 if _is_art_teacher(line):
                     name = lines[i - 1] if i > 0 else ""
                     if len(name.split()) >= 2:
@@ -387,6 +427,17 @@ async def _extract_staff(page: Page) -> list[StaffRecord]:
     if not records:
         all_lines = [l.strip() for l in text.splitlines() if l.strip()]
         for i, line in enumerate(all_lines):
+            split = _split_name_title(line)
+            if split and _is_art_teacher(split[1]):
+                name, title = split
+                context_block = " ".join(all_lines[max(0, i - 1):i + 2])
+                email_matches = EMAIL_RE.findall(context_block)
+                records.append(StaffRecord(
+                    name=name,
+                    title=title,
+                    email=email_matches[0] if email_matches else None,
+                ))
+                continue
             if _is_art_teacher(line):
                 for j in range(i - 1, max(i - 4, -1), -1):
                     candidate = all_lines[j]
@@ -508,7 +559,12 @@ async def _extract_staff_permissive(page: Page) -> list[StaffRecord]:
             lines = [l.strip() for l in raw.splitlines() if l.strip()]
             if not lines:
                 continue
-            name_candidate = lines[0]
+            split = _split_name_title(lines[0])
+            if split:
+                name_candidate, title = split
+            else:
+                name_candidate = lines[0]
+                title = _TITLE_CLEANUP_RE.sub("", lines[1]).strip() if len(lines) > 1 else "Visual Arts"
             words = name_candidate.split()
             if len(words) < 2 or len(name_candidate) > 60 or "@" in name_candidate:
                 continue
@@ -520,7 +576,6 @@ async def _extract_staff_permissive(page: Page) -> list[StaffRecord]:
                 email = msg_link
             if not email:
                 continue  # require contact info in permissive mode
-            title = _TITLE_CLEANUP_RE.sub("", lines[1]).strip() if len(lines) > 1 else "Visual Arts"
             records.append(StaffRecord(name=name_candidate, title=title or "Visual Arts", email=email))
 
     # Deduplicate by name
