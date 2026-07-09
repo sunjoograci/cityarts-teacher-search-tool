@@ -760,6 +760,28 @@
     }
   }
 
+  let _tickTimer = null;
+  let _scrapeStartedAt = null;  // ms timestamp
+  let _scrapeEta = null;        // seconds remaining, counted down locally
+
+  function startTicker() {
+    clearInterval(_tickTimer);
+    _tickTimer = setInterval(() => {
+      if (!_scrapeStartedAt) return;
+      const elapsed = (Date.now() - _scrapeStartedAt) / 1000;
+      document.getElementById('prog-elapsed').textContent = fmtTime(elapsed);
+      if (_scrapeEta !== null) {
+        _scrapeEta = Math.max(0, _scrapeEta - 1);
+        document.getElementById('prog-eta').textContent = _scrapeEta > 0 ? fmtTime(_scrapeEta) : 'almost done…';
+      }
+    }, 1000);
+  }
+
+  function stopTicker() {
+    clearInterval(_tickTimer);
+    _tickTimer = null;
+  }
+
   function startScrapePoller() {
     clearInterval(scrapePoller);
     scrapePoller = setInterval(pollScrapeStatus, 2000);
@@ -773,6 +795,12 @@
     } catch { return; }
 
     const { running, current, total, current_school, last_status, elapsed, eta, error, finished_at } = data;
+
+    // Sync local timer with server
+    if (data.started_at) {
+      _scrapeStartedAt = data.started_at * 1000;
+    }
+    if (eta != null) _scrapeEta = eta;
 
     if (total > 0) {
       const pct = Math.round((current / total) * 100);
@@ -788,10 +816,12 @@
       document.getElementById('scrape-btn').disabled = true;
       document.getElementById('scrape-btn').textContent = 'Scraping…';
       document.getElementById('stop-btn').style.display = '';
+      startTicker();
     }
 
-    document.getElementById('prog-elapsed').textContent = elapsed ? fmtTime(elapsed) : '—';
-    document.getElementById('prog-eta').textContent     = eta     ? fmtTime(eta)     : (running ? 'calculating…' : '—');
+    if (!eta) {
+      document.getElementById('prog-eta').textContent = running ? 'calculating…' : '—';
+    }
 
     if (current_school) {
       const statusLabel = last_status && last_status !== 'scraping' ? ` — ${last_status}` : '';
@@ -800,6 +830,9 @@
 
     if (!running) {
       clearInterval(scrapePoller);
+      stopTicker();
+      _scrapeStartedAt = null;
+      _scrapeEta = null;
       document.getElementById('scrape-btn').disabled = false;
       document.getElementById('scrape-btn').textContent = 'Start Scraping';
       document.getElementById('stop-btn').style.display = 'none';
