@@ -16,9 +16,11 @@ from pathlib import Path
 import requests
 from flask import Flask, jsonify, render_template, request, send_file
 
-from src.db import DB_PATH, get_conn
+from src.db import DB_PATH, get_conn, init_db
 
 app = Flask(__name__)
+
+init_db()
 
 # ---------------------------------------------------------------------------
 # Optional remote scraper service (needed on Vercel, which can't run
