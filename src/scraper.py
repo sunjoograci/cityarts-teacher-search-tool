@@ -84,17 +84,72 @@ class StaffRecord:
 # last name like "Smith-Jones" in half.
 _NAME_TITLE_SPLIT_RE = re.compile(r"\s*,\s*|\s*:\s*|\s+[-–—]\s+")
 
+# Each word of a real personal name is Title Case (optionally hyphenated /
+# apostrophized, e.g. "Smith-Jones", "O'Brien") or a bare capital-letter
+# initial ("J."). An ALL-CAPS word (an acronym like "AISD", "USED", "OSER")
+# fails this and is the single most common tell that a candidate is actually
+# a nav-menu label or document title, not a person.
+_NAME_WORD_RE = re.compile(r"^[A-Z][A-Za-z]*(?:['\-][A-Z][A-Za-z]*)*\.?$")
+_NAME_INITIAL_RE = re.compile(r"^[A-Z]\.?$")
+
+# Nav-menu / department / board-document vocabulary that slips past a naive
+# "2-5 title-case words, no digits" check. Found by auditing real extraction
+# output: "Federal & Special Programs", "School Board", "Job Postings",
+# "Special Programs", "Student Organizations", "Fine Arts" (as a bare page
+# heading, not a person), "toggle Fine Arts section" (an accordion widget's
+# button text). None of these are ever a real teacher's name.
+_NAV_LABEL_WORDS = {
+    "home", "department", "departments", "board", "agenda", "minutes", "policy",
+    "policies", "section", "toggle", "program", "programs", "posting", "postings",
+    "requirement", "requirements", "information", "service", "services", "meeting",
+    "meetings", "special", "federal", "district", "office", "staff", "faculty",
+    "directory", "contact", "career", "careers", "job", "jobs", "employment",
+    "human", "resources", "organization", "organizations", "committee",
+    "committees", "calendar", "handbook", "notice", "notices", "report",
+    "reports", "budget", "safety", "security", "police", "transportation",
+    "nutrition", "maintenance", "vehicle", "terminal", "bus", "academics",
+    "elementary", "secondary", "primary", "fine", "arts", "student", "students",
+    "regular", "annual", "welcome", "overview", "about", "news", "events",
+}
+
 
 def _looks_like_name(candidate: str) -> bool:
-    """Reject obvious non-names (badges like "1 Year", "K-5", stray labels)
-    that would otherwise pass a naive word-count check."""
+    """Reject obvious non-names: badges ("1 Year", "K-5"), and — the far more
+    damaging false-positive class found by auditing real output — nav-menu
+    labels and board-document titles ("Federal & Special Programs", "2024
+    Board Meeting Minutes", "Job Postings") that a naive word-count check
+    happily accepts since they're often 2-5 title-case-ish words with no
+    digits. Requires every word to actually look like a name token (Title
+    Case, not ALL-CAPS) and rejects a small vocabulary of institutional
+    nouns, plus punctuation ("&", "/", ":") that never appears in a name but
+    is common in labels.
+    """
     words = candidate.split()
-    return (
-        2 <= len(words) <= 5
-        and len(candidate) <= 60
-        and not any(ch.isdigit() for ch in candidate)
-        and not art_classifier.is_art_related(candidate)
-    )
+    if not (2 <= len(words) <= 5):
+        return False
+    if len(candidate) > 60:
+        return False
+    if any(ch.isdigit() for ch in candidate):
+        return False
+    if any(c in candidate for c in "&/:@|"):
+        return False
+    if art_classifier.is_art_related(candidate):
+        return False
+    lowered_words = {w.strip(".,").lower() for w in words}
+    if lowered_words & _NAV_LABEL_WORDS:
+        return False
+    return all(_NAME_WORD_RE.match(w) or _NAME_INITIAL_RE.match(w) for w in words)
+
+
+# A real job title is short. Reject anything that reads like a sentence or
+# paragraph ("The Bells ISD District Departments serve as the foundation of
+# our school community, providing...") — those come from grabbing a nav
+# card's full body text as if it were a title.
+def _looks_like_title(candidate: str) -> bool:
+    if not candidate:
+        return False
+    words = candidate.split()
+    return len(candidate) <= 100 and len(words) <= 12 and candidate.count(".") <= 1
 
 
 def _split_name_title(line: str) -> tuple[str, str] | None:
@@ -109,6 +164,66 @@ def _split_name_title(line: str) -> tuple[str, str] | None:
     if not title or not _looks_like_name(name):
         return None
     return name, title
+
+
+# ---------------------------------------------------------------------------
+# Multi-row table parsing.
+#
+# Real bug found by auditing extraction output: some sites render an entire
+# staff table as ONE DOM element (matched once by the "tr, li, [class*=
+# 'staff'], ..." selector as a single `item`) rather than exposing each
+# person as their own row/card. `item.innerText` then contains N people's
+# rows, one per line, each internally tab-delimited by its table cells:
+#     "Limon, Sarah\tCounselor HS\tEmail"
+#     "Livingston, John\tTeacher HS Art\tEmail"
+#     ...
+# The single-record fallback (`lines[0]` as name, `" ".join(lines[1:3])` as
+# title) implicitly assumes `lines` belongs to ONE person, so it blended
+# row 0's name with rows 1-2's raw text as "title" — producing a record
+# combining two different people ("Limon, Sarah" paired with "Livingston,
+# John Teacher HS Art"). `_looks_like_title`'s length/word cap now rejects
+# that specific garbage (nothing false ships), but the real people on these
+# sites were simply being missed. Parsing each line as its own independent
+# row fixes that properly instead of just suppressing the symptom.
+# ---------------------------------------------------------------------------
+
+_TABLE_ROW_SPLIT_RE = re.compile(r"\t+")
+
+
+def _normalize_last_first(name_field: str) -> str:
+    """"Livingston, John" -> "John Livingston". A bare "First Last" name
+    (no comma) is returned unchanged."""
+    if "," not in name_field:
+        return name_field.strip()
+    last, _, first = name_field.partition(",")
+    last, first = last.strip(), first.strip()
+    if not last or not first:
+        return name_field.strip()
+    return f"{first} {last}"
+
+
+def _parse_table_row(line: str) -> tuple[str, str] | None:
+    """Parse one tab-delimited table row: 'Lastname, Firstname\\tTitle\\t...'
+    (trailing cells like an "Email" button label are ignored). Returns
+    (name, title) or None if the line doesn't look like a real row.
+    """
+    cells = [c.strip() for c in _TABLE_ROW_SPLIT_RE.split(line) if c.strip()]
+    if len(cells) < 2:
+        return None
+    name = _normalize_last_first(cells[0])
+    title = cells[1]
+    if not _looks_like_name(name) or not _looks_like_title(title):
+        return None
+    return name, title
+
+
+def _parse_multi_row_table(lines: list[str]) -> list[tuple[str, str]]:
+    """Parse every line of a candidate block as an independent tab-
+    delimited row. Requires at least 2 independently-valid rows to be
+    meaningful — a single stray tab-delimited line is better handled by
+    the normal single-record path, not treated as "a whole table"."""
+    parsed = [row for line in lines if (row := _parse_table_row(line)) is not None]
+    return parsed if len(parsed) >= 2 else []
 
 
 class RobotsCache:
@@ -186,6 +301,31 @@ class RobotsCache:
 # Stage 2/3: directory discovery + access-barrier handling
 # ---------------------------------------------------------------------------
 
+# A single email or the bare word "staff" appearing anywhere on a page is
+# not evidence it's a staff *directory* — a board-policy page, a careers
+# page, or a site-wide nav menu all satisfy that trivially, and each one
+# that gets discovered this way turns into a fabricated "teacher" record.
+# Require real evidence of a person list: several mailto links, or a
+# meaningful density of name-shaped lines, or repeated staff-keyword
+# density — mirrors the heuristic used to audit real extraction output.
+_MAILTO_HREF_RE = re.compile(r'href=["\']mailto:', re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_NAME_LIKE_LINE_RE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z.'\-]+){1,3}$")
+
+
+def _looks_like_staff_directory(html_text: str) -> bool:
+    mailto_count = len(_MAILTO_HREF_RE.findall(html_text))
+    if mailto_count >= 3:
+        return True
+    staff_hits = len(STAFF_KEYWORD_RE.findall(html_text))
+    if mailto_count >= 1 and staff_hits >= 2:
+        return True
+    text = _HTML_TAG_RE.sub("\n", html_text)
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    name_like = sum(1 for l in lines if _NAME_LIKE_LINE_RE.match(l))
+    return name_like >= 5 or staff_hits >= 4
+
+
 async def find_directory(
     page: Page,
     base_url: str,
@@ -197,7 +337,7 @@ async def find_directory(
     as plain dicts, matched_source). `paths_attempted` is always populated —
     a caller may only emit NO_DIRECTORY_FOUND once this covers all sources.
     """
-    match_fn = lambda text: bool(EMAIL_RE.search(text) or STAFF_KEYWORD_RE.search(text))
+    match_fn = _looks_like_staff_directory
     attempts: list[pd.PathAttempt] = []
 
     if cached_candidate:
@@ -264,7 +404,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
         classification = art_classifier.classify(title)
         if not permissive and not classification.is_art:
             continue
-        if not _looks_like_name(name):
+        if not _looks_like_name(name) or not _looks_like_title(title):
             continue
         email, source = _resolve_email(item.get("email") or "", item.get("cfemail") or "", item.get("rawText") or "")
         records.append(StaffRecord(
@@ -309,6 +449,32 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
             if name_candidate is None:
                 if len(lines) < 2:
                     continue
+                # A single matched element can actually be a whole table —
+                # many people's rows concatenated, not one person's card.
+                # Detect that case and parse every row independently before
+                # falling back to the single-record lines[0]/lines[1:3]
+                # heuristic, which would otherwise blend two different
+                # people's rows into one bogus record (see
+                # _parse_multi_row_table's docstring for the real example
+                # this was found from).
+                table_rows = _parse_multi_row_table(lines)
+                if table_rows:
+                    emails_align = len(item_emails) == len(table_rows)
+                    for row_i, (row_name, row_title) in enumerate(table_rows):
+                        row_classification = art_classifier.classify(row_title)
+                        if not permissive and not row_classification.is_art:
+                            continue
+                        row_email = item_emails[row_i] if emails_align else None
+                        if permissive and not row_email:
+                            continue
+                        records.append(StaffRecord(
+                            name=row_name, title=row_title,
+                            email=row_email,
+                            discipline=row_classification.discipline,
+                            email_source="MAILTO" if row_email else None,
+                            evidence_url=evidence_url,
+                        ))
+                    continue
                 name_candidate = lines[0]
                 title_candidate = _TITLE_CLEANUP_RE.sub("", " ".join(lines[1:3])).strip()
                 classification = art_classifier.classify(title_candidate)
@@ -316,7 +482,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
                     continue
             else:
                 classification = art_classifier.classify(title_candidate)
-            if not _looks_like_name(name_candidate):
+            if not _looks_like_name(name_candidate) or not _looks_like_title(title_candidate):
                 continue
             raw_email = item_emails[0] if item_emails else ""
             email, source = _resolve_email(raw_email, cfemails[0] if cfemails else "", raw)
@@ -345,7 +511,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
             lines = [l.strip() for l in surrounding.splitlines() if l.strip()]
             for i, line in enumerate(lines):
                 split = _split_name_title(line)
-                if split and art_classifier.is_art_related(split[1]):
+                if split and art_classifier.is_art_related(split[1]) and _looks_like_title(split[1]):
                     classification = art_classifier.classify(split[1])
                     records.append(StaffRecord(
                         name=split[0], title=split[1], email=email,
@@ -353,7 +519,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
                         evidence_url=evidence_url,
                     ))
                     continue
-                if art_classifier.is_art_related(line):
+                if art_classifier.is_art_related(line) and _looks_like_title(line):
                     name = lines[i - 1] if i > 0 else ""
                     if _looks_like_name(name):
                         classification = art_classifier.classify(line)
@@ -369,7 +535,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
         all_lines = [l.strip() for l in text.splitlines() if l.strip()]
         for i, line in enumerate(all_lines):
             split = _split_name_title(line)
-            if split and art_classifier.is_art_related(split[1]):
+            if split and art_classifier.is_art_related(split[1]) and _looks_like_title(split[1]):
                 name, title = split
                 context_block = " ".join(all_lines[max(0, i - 1):i + 2])
                 email_matches = EMAIL_RE.findall(context_block)
@@ -382,7 +548,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
                     evidence_url=evidence_url,
                 ))
                 continue
-            if art_classifier.is_art_related(line):
+            if art_classifier.is_art_related(line) and _looks_like_title(line):
                 for j in range(i - 1, max(i - 4, -1), -1):
                     candidate = all_lines[j]
                     if _looks_like_name(candidate):
@@ -483,9 +649,21 @@ async def scrape_school(
         if not dir_url:
             return [], STATUS_NO_DIRECTORY_FOUND, attempts, resolution, None
 
-        if source in ("sitemap", "cms:blackboard", "cms:finalsite", "cms:edlio", "cms:apptegy",
-                      "cms:schoolmessenger", "cms:wordpress") and district_dir_cache is not None and district:
-            district_dir_cache[district] = pd.PathCandidate(url=dir_url, source=source, priority=1)
+        # Whether this candidate came from the district cache (a sibling
+        # school's already-discovered path) rather than fresh discovery.
+        # Caching happens *after* extraction below, not here — a page merely
+        # matching find_directory's loose text probe (an email or the word
+        # "staff" appears somewhere) is not proof it's a real staff
+        # directory. Caching on that alone let one bad match (e.g. a nav
+        # page or board-document archive) get reused verbatim across every
+        # sibling campus in a district, each one producing the exact same
+        # bogus "teacher" record — the caching contract now requires actual
+        # extracted records, not just a text-probe match.
+        came_from_cache = cached is not None and dir_url == cached.url
+        cacheable_source = source in (
+            "sitemap", "cms:blackboard", "cms:finalsite", "cms:edlio",
+            "cms:apptegy", "cms:schoolmessenger", "cms:wordpress",
+        )
 
         try:
             await page.goto(dir_url, timeout=20000, wait_until="domcontentloaded")
@@ -555,6 +733,18 @@ async def scrape_school(
             status = STATUS_PROGRAM_REDIRECTED
         else:
             status = STATUS_OK
+
+        if district_dir_cache is not None and district:
+            if records and cacheable_source:
+                # Proven: this URL yielded real, validated records — safe to
+                # hand to the next sibling campus.
+                district_dir_cache[district] = pd.PathCandidate(url=dir_url, source=source, priority=1)
+            elif came_from_cache and not records:
+                # The cached URL just failed for this campus — stop
+                # propagating it; the next sibling gets fresh discovery
+                # instead of the same suspect page.
+                district_dir_cache.pop(district, None)
+
         return records, status, attempts, resolution, dir_url
     except PWTimeout:
         return [], STATUS_TIMEOUT, [], resolution, None
