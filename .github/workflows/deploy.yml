@@ -29,6 +29,7 @@ jobs:
             sudo docker run -d \
               --name cityarts \
               --restart always \
+              --shm-size=1gb \
               -v /data:/data \
               -e DB_PATH=/data/schools.db \
               -p 8080:8080 \

@@ -67,6 +67,14 @@ STATUS_ERROR_PREFIX = "error:"
 # Statuses that indicate the school was skipped/missed rather than truly scraped
 MISSED_STATUSES = (STATUS_NO_DIRECTORY_FOUND, STATUS_TIMEOUT, STATUS_BLOCKED)
 
+# Pre-refactor status strings written by scraper versions older than the
+# STATUS_* constants above (deployments whose database predates that rebuild,
+# e.g. a long-lived Oracle/VM host, will have rows stuck with these forever
+# otherwise — they don't match MISSED_STATUSES so --rescrape silently skips
+# them). Treated as equivalent to their current uppercase counterpart when
+# deciding what counts as "missed".
+LEGACY_MISSED_STATUSES = ("no_directory_found", "timeout", "robots_blocked", "no_url")
+
 
 @dataclass
 class StaffRecord:
@@ -811,30 +819,26 @@ async def run_scraper(
     should_stop=None,
     concurrency: int | None = None,
 ) -> None:
-    with get_conn() as conn:
-        state_ph_check = ",".join("?" * len(states))
-        ingested_states = {
-            row["state"]
-            for row in conn.execute(
-                f"SELECT DISTINCT state FROM schools WHERE state IN ({state_ph_check})",
-                states,
-            ).fetchall()
-        }
-    missing_states = [s for s in states if s not in ingested_states]
-    if missing_states:
-        from .ingest import ingest_schools
-        log.info("No schools ingested yet for %s — ingesting from NCES data now.", missing_states)
-        ingest_schools(missing_states)
+    # Re-ingesting is a cheap INSERT-OR-IGNORE keyed on nces_id (see
+    # src/ingest.py), so it's safe — and necessary — to run for states that
+    # already have rows: the on-disk NCES CSV can gain schools between
+    # ingests (a long-lived host's DB otherwise drifts further behind the
+    # source data every time it's refreshed, silently missing thousands of
+    # schools it never had a chance to scrape).
+    from .ingest import ingest_schools
+    log.info("Topping up school list for %s from NCES data…", states)
+    ingest_schools(states)
 
     with get_conn() as conn:
         if rescrape_missed:
             state_ph = ",".join("?" * len(states))
+            missed = list(MISSED_STATUSES) + list(LEGACY_MISSED_STATUSES)
             n = conn.execute(
                 f"""UPDATE schools SET scraped=0
                     WHERE state IN ({state_ph})
-                      AND (scrape_status IN ({','.join('?' * len(MISSED_STATUSES))})
+                      AND (scrape_status IN ({','.join('?' * len(missed))})
                            OR scrape_status LIKE 'error:%')""",
-                list(states) + list(MISSED_STATUSES),
+                list(states) + missed,
             ).rowcount
             log.info("Reset %d missed school(s) for re-scraping.", n)
         q = """SELECT id, school_name, website_url, district_name, state FROM schools
@@ -877,7 +881,16 @@ async def run_scraper(
 
     async with aiohttp.ClientSession(headers={"User-Agent": SCRAPER_UA}) as session:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True)
+            # --disable-dev-shm-usage: Docker's default /dev/shm is 64MB, far
+            # below what Chromium wants. On a host that doesn't raise it (e.g.
+            # a plain `docker run` with no --shm-size flag), Chromium falls
+            # back to slow disk-backed shared memory and page loads that
+            # would normally finish in ~1s instead blow past the 20s
+            # navigation timeout — this is the single biggest cause of
+            # inflated TIMEOUT counts on such hosts.
+            browser = await pw.chromium.launch(
+                headless=True, args=["--disable-dev-shm-usage"],
+            )
 
             async def worker(school_row) -> None:
                 nonlocal completed
