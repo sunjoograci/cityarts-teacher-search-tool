@@ -79,6 +79,15 @@ STATUS_ERROR_PREFIX = "error:"
 # Statuses that indicate the school was skipped/missed rather than truly scraped
 MISSED_STATUSES = (STATUS_NO_DIRECTORY_FOUND, STATUS_TIMEOUT, STATUS_BLOCKED)
 
+# States already topped up (via ingest_schools) since this process started.
+# Re-ingesting is safe to repeat (INSERT OR IGNORE keyed on nces_id) but not
+# cheap: it parses the entire national NCES CSV (100k+ rows) every call. Once
+# a state has been topped up in this process's lifetime there is nothing new
+# to find until the on-disk CSV itself changes (i.e. the next deploy), so
+# doing it again on every single "Start Scrape" click is pure wasted CPU —
+# on a resource-constrained host that wait alone can dwarf the scrape itself.
+_topped_up_states: set[str] = set()
+
 # Pre-refactor status strings written by scraper versions older than the
 # STATUS_* constants above (deployments whose database predates that rebuild,
 # e.g. a long-lived Oracle/VM host, will have rows stuck with these forever
@@ -851,15 +860,17 @@ async def run_scraper(
     should_stop=None,
     concurrency: int | None = None,
 ) -> None:
-    # Re-ingesting is a cheap INSERT-OR-IGNORE keyed on nces_id (see
-    # src/ingest.py), so it's safe — and necessary — to run for states that
-    # already have rows: the on-disk NCES CSV can gain schools between
-    # ingests (a long-lived host's DB otherwise drifts further behind the
-    # source data every time it's refreshed, silently missing thousands of
-    # schools it never had a chance to scrape).
-    from .ingest import ingest_schools
-    log.info("Topping up school list for %s from NCES data…", states)
-    ingest_schools(states)
+    # Top up states that haven't been re-ingested yet this process (see
+    # _topped_up_states docstring above) — the on-disk NCES CSV can gain
+    # schools between ingests, so a long-lived host's DB otherwise drifts
+    # further behind the source data every deploy, silently missing
+    # thousands of schools it never had a chance to scrape.
+    states_to_top_up = [s for s in states if s not in _topped_up_states]
+    if states_to_top_up:
+        from .ingest import ingest_schools
+        log.info("Topping up school list for %s from NCES data…", states_to_top_up)
+        ingest_schools(states_to_top_up)
+        _topped_up_states.update(states_to_top_up)
 
     with get_conn() as conn:
         if rescrape_missed:
@@ -953,7 +964,33 @@ async def run_scraper(
                     if on_progress:
                         on_progress(completed, total, school_dict["school_name"], status)
 
-            await asyncio.gather(*(worker(row) for row in rows))
+            # `should_stop` is only checked at the semaphore gate above, so a
+            # school already in flight (mid page.goto, mid directory probing)
+            # would otherwise run to completion — up to ~60s of chained
+            # per-school timeouts — before a plain `gather` returns. On a
+            # slow/resource-starved host where those in-flight operations are
+            # already timing out rather than finishing fast, that makes
+            # "Stop" feel broken. Force-cancel every outstanding task the
+            # moment a stop is requested instead of waiting for them to
+            # finish or time out naturally.
+            tasks = [asyncio.create_task(worker(row)) for row in rows]
+
+            async def _watch_for_stop() -> None:
+                while not all(t.done() for t in tasks):
+                    if should_stop and should_stop():
+                        for t in tasks:
+                            if not t.done():
+                                t.cancel()
+                        return
+                    await asyncio.sleep(0.5)
+
+            watcher = asyncio.create_task(_watch_for_stop())
+            await asyncio.gather(*tasks, return_exceptions=True)
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
             await browser.close()
 
 
