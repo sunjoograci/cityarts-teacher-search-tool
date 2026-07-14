@@ -14,12 +14,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.scraper import (
+    _clean_title,
+    _drop_school_name_titles,
     _looks_like_name,
     _looks_like_title,
     _looks_like_staff_directory,
     _normalize_last_first,
     _parse_table_row,
     _parse_multi_row_table,
+    StaffRecord,
 )
 
 
@@ -150,3 +153,56 @@ def test_parse_multi_row_table_ignores_non_row_lines():
     rows = _parse_multi_row_table(lines)
     assert len(rows) == 2
     assert all(name != "Staff Directory" for name, _ in rows)
+
+
+# ---------------------------------------------------------------------------
+# Real bugs found by auditing live extraction output (see conversation/PR
+# context): a "years of service" badge swapped into the name field, a
+# person's email glued onto their title, and performing-arts ensemble names
+# ("Premier Choirs") passing the name heuristic just like a real two-word
+# name would.
+# ---------------------------------------------------------------------------
+
+def test_clean_title_strips_embedded_email():
+    assert _clean_title("Art/Yearbook kwaterman@usd505.org") == "Art/Yearbook"
+    assert _clean_title("Band Director") == "Band Director"
+    assert _clean_title("Art Teacher Send a Message") == "Art Teacher"
+
+
+def test_rejects_service_badges_as_names():
+    # A digit already disqualifies these ("1 Year" etc.) — asserted here so
+    # a future change to that check can't silently regress this case.
+    for badge in ("1 Year", "5 Years", "10 Years"):
+        assert _looks_like_name(badge) is False, f"{badge!r} should be rejected"
+
+
+def test_rejects_ensemble_and_program_names_as_names():
+    bad = [
+        "Premier Choirs", "Wind Ensemble", "Chamber Orchestra",
+        "Jazz Band", "Concert Choir", "Marching Band",
+        "Fine Arts Conservatories",
+    ]
+    for name in bad:
+        assert _looks_like_name(name) is False, f"{name!r} should be rejected"
+
+
+def test_drops_records_whose_title_is_the_schools_own_name():
+    # A page heading (e.g. an <h1> or nav crumb reading "Fort Worth Academy
+    # of Fine Arts") gets misread as a job title when the surrounding markup
+    # doesn't clearly separate name from title.
+    records = [
+        StaffRecord(name="Staff Directory", title="Fort Worth Academy of Fine Arts"),
+        StaffRecord(name="Kayla Kinser", title="Art Teacher"),
+    ]
+    kept = _drop_school_name_titles(records, "Fort Worth Academy of Fine Arts")
+    assert [r.name for r in kept] == ["Kayla Kinser"]
+
+
+def test_drop_school_name_titles_is_case_and_whitespace_insensitive():
+    records = [StaffRecord(name="X", title="  FORT WORTH ACADEMY OF FINE ARTS  ")]
+    assert _drop_school_name_titles(records, "Fort Worth Academy of Fine Arts") == []
+
+
+def test_drop_school_name_titles_noop_without_school_name():
+    records = [StaffRecord(name="X", title="Art Teacher")]
+    assert _drop_school_name_titles(records, None) == records

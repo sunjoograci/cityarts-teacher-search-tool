@@ -43,6 +43,18 @@ SEND_MESSAGE_RE = re.compile(
 # Strip these button labels from scraped title text
 _TITLE_CLEANUP_RE = re.compile(r"\s*\bsend\s+(?:a\s+)?message\b.*$", re.IGNORECASE)
 
+
+def _clean_title(text: str) -> str:
+    """Strip a trailing "send a message" button label and any embedded email
+    address out of raw title text. Some site markups render a person's email
+    as visible text inside the same title/badge element (e.g. a "Title" cell
+    that also contains the address on its own line), which otherwise ends up
+    glued onto the title after `innerText` collapses line breaks to spaces —
+    e.g. "Art/Yearbook kwaterman@usd505.org"."""
+    text = _TITLE_CLEANUP_RE.sub("", text)
+    text = EMAIL_RE.sub("", text)
+    return text.strip()
+
 STAFF_KEYWORD_RE = re.compile(r"\b(teacher|instructor|staff|faculty)\b", re.IGNORECASE)
 ARTS_KEYWORD_RE = re.compile(r"\b(art|visual arts?|fine arts?)\b", re.IGNORECASE)
 
@@ -118,6 +130,14 @@ _NAV_LABEL_WORDS = {
     "nutrition", "maintenance", "vehicle", "terminal", "bus", "academics",
     "elementary", "secondary", "primary", "fine", "arts", "student", "students",
     "regular", "annual", "welcome", "overview", "about", "news", "events",
+    # Performing-arts ensemble/program names: real teacher rosters routinely
+    # sit right next to a group's own name (e.g. "Premier Choirs", "Wind
+    # Ensemble", "Chamber Orchestra") which is 2-3 Title Case words like a
+    # real name but is never a person.
+    "choir", "choirs", "chorus", "chorale", "chorales", "orchestra",
+    "orchestras", "ensemble", "ensembles", "conservatory", "conservatories",
+    "philharmonic", "symphony", "band", "bands", "strings", "singers",
+    "premier", "varsity", "junior", "concert", "marching", "jazz",
 }
 
 
@@ -408,7 +428,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
     )
     for item in semantic:
         name = item.get("name", "").strip()
-        title = _TITLE_CLEANUP_RE.sub("", item.get("title", "")).strip()
+        title = _clean_title(item.get("title", ""))
         classification = art_classifier.classify(title)
         if not permissive and not classification.is_art:
             continue
@@ -484,7 +504,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
                         ))
                     continue
                 name_candidate = lines[0]
-                title_candidate = _TITLE_CLEANUP_RE.sub("", " ".join(lines[1:3])).strip()
+                title_candidate = _clean_title(" ".join(lines[1:3]))
                 classification = art_classifier.classify(title_candidate)
                 if not permissive and not classification.is_art:
                     continue
@@ -581,6 +601,16 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
             seen.add(key)
             unique.append(r)
     return unique
+
+
+def _drop_school_name_titles(records: list[StaffRecord], school_name: Optional[str]) -> list[StaffRecord]:
+    """A "title" that's just the school's own name is a page heading (e.g. a
+    nav crumb or <h1>) misread as a job title, not a real role — no one's
+    title is literally the name of the school they work at."""
+    school_name_norm = (school_name or "").strip().lower()
+    if not school_name_norm:
+        return records
+    return [r for r in records if r.title.strip().lower() != school_name_norm]
 
 
 def _resolve_email(mailto_or_form: str, cfhex: str, raw_text: str) -> tuple[Optional[str], Optional[str]]:
@@ -726,6 +756,8 @@ async def scrape_school(
                 await asyncio.sleep(1.0)
                 records = await _extract_staff(page, hit.url, permissive=True)
                 arts_page_used = bool(records)
+
+        records = _drop_school_name_titles(records, school.get("school_name"))
 
         seen = {r.name.lower() for r in records}
         deduped = []
