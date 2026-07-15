@@ -18,6 +18,7 @@ def get_conn() -> sqlite3.Connection:
 # Generational suffixes that must stay uppercase — "Robert Smith III" must
 # not become "Robert Smith Iii".
 _ROMAN_SUFFIX_RE = re.compile(r"^(?:II|III|IV|V)$", re.IGNORECASE)
+_MC_NAME_RE = re.compile(r"\bMc([a-z])")
 
 
 def _recase_word(word: str) -> str:
@@ -25,7 +26,10 @@ def _recase_word(word: str) -> str:
         return word.upper()
     # Capitalize each alphabetic run, so hyphens/apostrophes reset the
     # capital: "O'BRIEN-SMITH" -> "O'Brien-Smith".
-    return re.sub(r"[A-Za-z]+", lambda m: m.group(0).capitalize(), word)
+    recased = re.sub(r"[A-Za-z]+", lambda m: m.group(0).capitalize(), word)
+    # "MCALLISTER" -> capitalize() alone gives "Mcallister"; fix the
+    # second capital a Mc-prefixed surname actually has.
+    return _MC_NAME_RE.sub(lambda m: "Mc" + m.group(1).upper(), recased)
 
 
 def normalize_person_name(name: str) -> str:
@@ -62,6 +66,43 @@ def normalize_existing_names() -> int:
                 conn.execute("DELETE FROM staff WHERE id=?", (row["id"],))
             changed += 1
     return changed
+
+
+# Common school/district abbreviations that should stay uppercase rather than
+# be title-cased (e.g. "ABILENE ISD" -> "Abilene ISD", not "Abilene Isd").
+# Used for school/city/district names (see src/ingest.py) — a different
+# scope from normalize_person_name above, which is for people's names.
+_SHOUTY_KEEP_UPPER = {
+    "II", "III", "IV", "V", "VI",
+    "HS", "MS", "ES", "PK", "DAEP",
+    "ISD", "CISD", "USD", "LEA", "NCES",
+}
+
+
+def _looks_shouty(s: str) -> bool:
+    """True if s has at least one letter and no lowercase letters —
+    i.e. it looks like ALL-CAPS text rather than intentional mixed case."""
+    return bool(re.search(r"[A-Z]", s)) and not re.search(r"[a-z]", s)
+
+
+def smart_title_case(s: str | None) -> str | None:
+    """Convert ALL-CAPS strings to normal title case.
+
+    NCES's raw school data (and some district staff directories) publish
+    names in ALL CAPS. Strings that already have lowercase letters are
+    assumed to be normally formatted already and are left untouched, so
+    this never mangles legitimately mixed-case input.
+    """
+    if not s or not _looks_shouty(s):
+        return s
+    titled = s.title()
+    titled = re.sub(
+        r"[A-Za-z][A-Za-z'-]*",
+        lambda m: m.group(0).upper() if m.group(0).upper() in _SHOUTY_KEEP_UPPER else m.group(0),
+        titled,
+    )
+    titled = _MC_NAME_RE.sub(lambda m: "Mc" + m.group(1).upper(), titled)
+    return titled
 
 
 def group_teacher_rows(rows) -> list[dict]:
