@@ -28,7 +28,7 @@ from . import art_classifier
 from . import email_decoder as ed
 from . import entity_resolver as er
 from . import path_discovery as pd
-from .db import get_conn
+from .db import get_conn, normalize_person_name
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +62,23 @@ DELAY_BETWEEN_REQUESTS = 2.5  # seconds, used when robots.txt has no Crawl-delay
 
 DEFAULT_CONCURRENCY = int(os.environ.get("SCRAPE_CONCURRENCY", "4"))
 PROBE_TIMEOUT = 6.0
+
+# Identity used for robots.txt rule matching — the honest crawler name.
 SCRAPER_UA = "Mozilla/5.0 (compatible; CityArts-TeacherFinder/1.0; +https://cityarts.org)"
+
+# UA presented on actual page fetches. School-district firewalls (Cloudflare
+# and similar) hard-block anything self-identifying as a bot, which surfaces
+# as 403s/challenge pages and was a major source of silently missed schools —
+# especially from datacenter IPs. robots.txt rules are still checked and
+# honored under the SCRAPER_UA identity above.
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+# Navigation timeout for page.goto. The old fixed 20s proved too tight for
+# slow school CMSes even on healthy hosts, inflating TIMEOUT counts.
+NAV_TIMEOUT_MS = int(os.environ.get("SCRAPE_NAV_TIMEOUT_MS", "45000"))
 
 # Statuses matching the output contract (Stage 6).
 STATUS_OK = "OK"
@@ -73,11 +89,20 @@ STATUS_AMBIGUOUS_ENTITY = "AMBIGUOUS_ENTITY"
 STATUS_NOT_A_SCHOOL = "NOT_A_SCHOOL"
 STATUS_PROGRAM_REDIRECTED = "PROGRAM_REDIRECTED"
 STATUS_BLOCKED = "BLOCKED"
+# BLOCKED = we chose not to fetch (robots.txt disallow). BLOCKED_BY_SITE =
+# we tried and the site's firewall refused us (HTTP 403/429/503 or a
+# Cloudflare-style challenge page). Distinguishing them matters: the second
+# group is host-dependent (a residential IP often gets through where a
+# datacenter IP is refused) so those schools are worth re-scraping from a
+# different network, while robots-blocked schools never are.
+STATUS_BLOCKED_BY_SITE = "BLOCKED_BY_SITE"
 STATUS_TIMEOUT = "TIMEOUT"
 STATUS_ERROR_PREFIX = "error:"
 
 # Statuses that indicate the school was skipped/missed rather than truly scraped
-MISSED_STATUSES = (STATUS_NO_DIRECTORY_FOUND, STATUS_TIMEOUT, STATUS_BLOCKED)
+MISSED_STATUSES = (
+    STATUS_NO_DIRECTORY_FOUND, STATUS_TIMEOUT, STATUS_BLOCKED, STATUS_BLOCKED_BY_SITE,
+)
 
 # States already topped up (via ingest_schools) since this process started.
 # Re-ingesting is safe to repeat (INSERT OR IGNORE keyed on nces_id) but not
@@ -106,6 +131,11 @@ class StaffRecord:
     email_source: Optional[str] = None
     email_verified: bool = False
     evidence_url: Optional[str] = None
+    # Which extraction strategy produced this record (semantic_card |
+    # name_title_line | table_row | generic_block | mailto_context |
+    # text_scan) — persisted so bad rows can be traced back to the heuristic
+    # that emitted them instead of guessing.
+    extraction_strategy: Optional[str] = None
 
 
 # Splits a single "Name, Title" / "Name - Title" / "Name: Title" line in two.
@@ -147,6 +177,21 @@ _NAV_LABEL_WORDS = {
     "orchestras", "ensemble", "ensembles", "conservatory", "conservatories",
     "philharmonic", "symphony", "band", "bands", "strings", "singers",
     "premier", "varsity", "junior", "concert", "marching", "jazz",
+    # Fine-arts-page nav/sidebar vocabulary, found by auditing text_scan
+    # output: "Optional Link", "Open Menu", "Booster Club Info", "Middle
+    # School Musicals", "Holiday Concerts", "Facilities And Operations",
+    # "Physical Education" were all extracted as teacher "names".
+    "link", "links", "menu", "open", "close", "booster", "boosters",
+    "club", "clubs", "musical", "musicals", "holiday", "holidays",
+    "improvement", "facility", "facilities", "operation", "operations",
+    "physical", "education", "schedule", "schedules", "show", "shows",
+    "form", "forms", "resource", "resources", "gallery", "galleries",
+    "audition", "auditions", "ticket", "tickets", "donate", "volunteer",
+    "school", "schools", "middle",
+    "showcase", "medal", "medals", "dancer", "dancers", "society",
+    "societies", "honor", "honors", "national", "instructional",
+    "material", "materials", "month", "months",
+    "world", "language", "languages", "stay", "connected", "soup", "cans",
 }
 
 
@@ -172,10 +217,35 @@ def _looks_like_name(candidate: str) -> bool:
         return False
     if art_classifier.is_art_related(candidate):
         return False
-    lowered_words = {w.strip(".,").lower() for w in words}
+    # An acronym mixed with Title Case words ("GISD Showcase", "UIL Medals",
+    # "NEISD Dancers") is an announcement/nav label, never a person. A name
+    # that is ALL-CAPS *throughout* ("KATE REECE") is common site styling
+    # and stays accepted (it's recased on save); single initials ("J.")
+    # don't count as acronyms.
+    acronyms = [w for w in words if len(w.strip(".,")) >= 2 and w.isupper()]
+    if acronyms and len(acronyms) < len(words):
+        return False
+    # Check singular forms too, so pluralized labels ("Holiday Concerts",
+    # "Teacher Pages") can't slip past a singular-only vocabulary entry.
+    lowered_words = set()
+    for w in words:
+        w = w.strip(".,").lower()
+        lowered_words.add(w)
+        if w.endswith("s"):
+            lowered_words.add(w[:-1])
     if lowered_words & _NAV_LABEL_WORDS:
         return False
     return all(_NAME_WORD_RE.match(w) or _NAME_INITIAL_RE.match(w) for w in words)
+
+
+# Words/phrases that appear in nav links, page furniture, or marketing copy
+# masquerading as a job title ("Music Links", "Fine Arts Calendar", "Meet
+# our Fine Arts Administration", "Learn more about...") but never in a real
+# one.
+_TITLE_JUNK_RE = re.compile(
+    r"\b(links?|calendar|menu|click|showcase|welcome|meet\s+our|learn\s+more|stay\s+connected)\b",
+    re.IGNORECASE,
+)
 
 
 # A real job title is short. Reject anything that reads like a sentence or
@@ -185,8 +255,38 @@ def _looks_like_name(candidate: str) -> bool:
 def _looks_like_title(candidate: str) -> bool:
     if not candidate:
         return False
+    if _TITLE_JUNK_RE.search(candidate):
+        return False
     words = candidate.split()
     return len(candidate) <= 100 and len(words) <= 12 and candidate.count(".") <= 1
+
+
+def _email_matches_name(name: str, email: str) -> bool:
+    """Loose check that an email plausibly belongs to this person — used only
+    for emails harvested from *surrounding text* (text_scan), where the
+    nearest address on the page can easily be a neighboring row's ("Wendi
+    Burton" was paired with lsanders@… in real output). Accepts the common
+    school-district local-part shapes: last name, first name, first.last,
+    initial+last, first+last-initial."""
+    local = email.split("@", 1)[0].lower()
+    local_alpha = re.sub(r"[^a-z]", "", local)
+    parts = [re.sub(r"[^a-z]", "", w.lower()) for w in name.split()]
+    parts = [p for p in parts if len(p) >= 2]
+    if not parts or not local_alpha:
+        return False
+    first, last = parts[0], parts[-1]
+    if len(last) >= 3 and last in local_alpha:
+        return True
+    if len(first) >= 3 and first in local_alpha:
+        return True
+    return local_alpha in (first[0] + last, first + last[0])
+
+
+def _pick_matching_email(name: str, emails: list[str]) -> Optional[str]:
+    for email in emails:
+        if _email_matches_name(name, email):
+            return email
+    return None
 
 
 def _split_name_title(line: str) -> tuple[str, str] | None:
@@ -447,7 +547,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
         records.append(StaffRecord(
             name=name, title=title, email=email,
             discipline=classification.discipline, email_source=source,
-            evidence_url=evidence_url,
+            evidence_url=evidence_url, extraction_strategy="semantic_card",
         ))
 
     # Strategy 2: Generic card/row blobs.
@@ -477,6 +577,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
             # A "Name, Title" pair can appear packed on any line of the block,
             # not necessarily the first (e.g. a "1 Year" tenure badge before it).
             name_candidate = title_candidate = None
+            strategy = "name_title_line"
             for line in lines:
                 split = _split_name_title(line)
                 if split and art_classifier.is_art_related(split[1]):
@@ -510,10 +611,30 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
                             discipline=row_classification.discipline,
                             email_source="MAILTO" if row_email else None,
                             evidence_url=evidence_url,
+                            extraction_strategy="table_row",
                         ))
                     continue
+                # Risky fallback, tightened: the title must be a SINGLE line
+                # that itself passes the title check (and, outside permissive
+                # arts-page mode, is itself art-related). The old behavior —
+                # blindly joining lines[1:3] into one "title" — is how a
+                # neighboring person's row or a nav card's body text got
+                # glued onto an unrelated name.
+                strategy = "generic_block"
                 name_candidate = lines[0]
-                title_candidate = _clean_title(" ".join(lines[1:3]))
+                title_lines = (_clean_title(l) for l in lines[1:3])
+                if permissive:
+                    title_candidate = next(
+                        (t for t in title_lines if t and _looks_like_title(t)), None
+                    )
+                else:
+                    title_candidate = next(
+                        (t for t in title_lines
+                         if t and _looks_like_title(t) and art_classifier.is_art_related(t)),
+                        None,
+                    )
+                if not title_candidate:
+                    continue
                 classification = art_classifier.classify(title_candidate)
                 if not permissive and not classification.is_art:
                     continue
@@ -530,7 +651,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
             records.append(StaffRecord(
                 name=name_candidate, title=title_candidate, email=email,
                 discipline=classification.discipline, email_source=source,
-                evidence_url=evidence_url,
+                evidence_url=evidence_url, extraction_strategy=strategy,
             ))
 
     # Strategy 3: mailto links — use surrounding container text to find name/title.
@@ -553,7 +674,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
                     records.append(StaffRecord(
                         name=split[0], title=split[1], email=email,
                         discipline=classification.discipline, email_source="MAILTO",
-                        evidence_url=evidence_url,
+                        evidence_url=evidence_url, extraction_strategy="mailto_context",
                     ))
                     continue
                 if art_classifier.is_art_related(line) and _looks_like_title(line):
@@ -563,7 +684,7 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
                         records.append(StaffRecord(
                             name=name, title=line, email=email,
                             discipline=classification.discipline, email_source="MAILTO",
-                            evidence_url=evidence_url,
+                            evidence_url=evidence_url, extraction_strategy="mailto_context",
                         ))
 
     # Strategy 4: Plain-text line scan — art title line, name on a preceding line.
@@ -575,29 +696,33 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
             if split and art_classifier.is_art_related(split[1]) and _looks_like_title(split[1]):
                 name, title = split
                 context_block = " ".join(all_lines[max(0, i - 1):i + 2])
-                email_matches = EMAIL_RE.findall(context_block)
+                email = _pick_matching_email(name, EMAIL_RE.findall(context_block))
                 classification = art_classifier.classify(title)
                 records.append(StaffRecord(
                     name=name, title=title,
-                    email=email_matches[0] if email_matches else None,
+                    email=email,
                     discipline=classification.discipline,
-                    email_source="MAILTO" if email_matches else None,
-                    evidence_url=evidence_url,
+                    email_source="MAILTO" if email else None,
+                    evidence_url=evidence_url, extraction_strategy="text_scan",
                 ))
                 continue
             if art_classifier.is_art_related(line) and _looks_like_title(line):
-                for j in range(i - 1, max(i - 4, -1), -1):
+                # Risky fallback, tightened: only look back 2 lines for the
+                # name (was 3). At 3 lines of separation the "name" is more
+                # often a different person's row or an unrelated heading than
+                # the owner of this title line.
+                for j in range(i - 1, max(i - 3, -1), -1):
                     candidate = all_lines[j]
                     if _looks_like_name(candidate):
                         context_block = " ".join(all_lines[max(0, i - 2):i + 3])
-                        email_matches = EMAIL_RE.findall(context_block)
+                        email = _pick_matching_email(candidate, EMAIL_RE.findall(context_block))
                         classification = art_classifier.classify(line)
                         records.append(StaffRecord(
                             name=candidate, title=line,
-                            email=email_matches[0] if email_matches else None,
+                            email=email,
                             discipline=classification.discipline,
-                            email_source="MAILTO" if email_matches else None,
-                            evidence_url=evidence_url,
+                            email_source="MAILTO" if email else None,
+                            evidence_url=evidence_url, extraction_strategy="text_scan",
                         ))
                         break
 
@@ -641,6 +766,25 @@ def _resolve_email(mailto_or_form: str, cfhex: str, raw_text: str) -> tuple[Opti
     return None, None
 
 
+async def _preferred_base_url(url: str, session: aiohttp.ClientSession) -> str:
+    """NCES data often records a plain-HTTP url for a district that has since
+    gone HTTPS-only (nothing listens on :80 anymore, every probe dies with a
+    connection error, and the school is falsely marked NO_DIRECTORY_FOUND).
+    Prefer the https:// variant whenever it answers."""
+    if not url.startswith("http://"):
+        return url
+    https_url = "https://" + url[len("http://"):]
+    try:
+        async with session.get(
+            https_url, timeout=aiohttp.ClientTimeout(total=PROBE_TIMEOUT), allow_redirects=True
+        ) as resp:
+            if resp.status < 400:
+                return https_url
+    except Exception:
+        pass
+    return url
+
+
 async def scrape_school(
     browser: Browser,
     school: dict,
@@ -679,7 +823,9 @@ async def scrape_school(
         robots = RobotsCache()
     own_session = session is None
     if own_session:
-        session = aiohttp.ClientSession(headers={"User-Agent": SCRAPER_UA})
+        session = aiohttp.ClientSession(headers={"User-Agent": BROWSER_UA})
+
+    url = await _preferred_base_url(url, session)
 
     if not await robots.can_fetch(url, session):
         if own_session:
@@ -689,11 +835,20 @@ async def scrape_school(
     district = school.get("district_name")
     cached = district_dir_cache.get(district) if (district_dir_cache and district) else None
 
-    context = await browser.new_context(user_agent=SCRAPER_UA)
+    context = await browser.new_context(user_agent=BROWSER_UA)
     page = await context.new_page()
     try:
         dir_url, attempts, source = await find_directory(page, url, session, robots, cached)
         if not dir_url:
+            # If every HTTP response during discovery was a firewall-style
+            # refusal, the site wasn't missing a directory — it refused to
+            # talk to this host at all. Report that distinctly so these
+            # schools can be retried from a friendlier network.
+            http_statuses = [
+                a.get("status") for a in attempts if isinstance(a.get("status"), int)
+            ]
+            if http_statuses and all(s in (403, 429, 503) for s in http_statuses):
+                return [], STATUS_BLOCKED_BY_SITE, attempts, resolution, None
             return [], STATUS_NO_DIRECTORY_FOUND, attempts, resolution, None
 
         # Whether this candidate came from the district cache (a sibling
@@ -713,11 +868,15 @@ async def scrape_school(
         )
 
         try:
-            await page.goto(dir_url, timeout=20000, wait_until="domcontentloaded")
+            nav_response = await page.goto(dir_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
         except PWTimeout:
             return [], STATUS_TIMEOUT, attempts, resolution, dir_url
 
         body_text = await page.inner_text("body")
+        if acc.looks_like_bot_challenge(
+            nav_response.status if nav_response else 200, body_text
+        ):
+            return [], STATUS_BLOCKED_BY_SITE, attempts, resolution, dir_url
         has_password = await page.query_selector("input[type=password]") is not None
         if acc.looks_like_auth_wall(body_text, has_password):
             return [], STATUS_AUTH_REQUIRED, attempts, resolution, dir_url
@@ -761,7 +920,7 @@ async def scrape_school(
             hit, dept_attempts = await pd.probe_candidates(session, dept_candidates, robots, arts_match)
             attempts.extend(a.__dict__ for a in dept_attempts)
             if hit:
-                await page.goto(hit.url, timeout=20000, wait_until="domcontentloaded")
+                await page.goto(hit.url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
                 await asyncio.sleep(1.0)
                 records = await _extract_staff(page, hit.url, permissive=True)
                 arts_page_used = bool(records)
@@ -806,6 +965,34 @@ async def scrape_school(
             await session.close()
 
 
+def record_to_dict(r: StaffRecord) -> dict:
+    return {
+        "name": r.name, "title": r.title, "email": r.email,
+        "discipline": r.discipline, "email_source": r.email_source,
+        "email_verified": r.email_verified, "evidence_url": r.evidence_url,
+        "extraction_strategy": r.extraction_strategy,
+    }
+
+
+async def _default_persist(
+    school_dict: dict, records: list[StaffRecord], status: str,
+    paths_attempted: list[dict], resolution: er.EntityResolution,
+    directory_url: Optional[str], session: aiohttp.ClientSession,
+) -> int:
+    """The original behavior: write straight to the local database. Used
+    unless the caller supplies a `persist_fn` (see run_scraper) — e.g. one
+    that POSTs to a central server's /api/ingest/school instead, for a local
+    scrape whose results should land in someone else's database."""
+    saved = save_staff(school_dict["id"], records)
+    _save_resolution(school_dict["id"], resolution, status, paths_attempted, directory_url)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE schools SET scraped=1, scrape_status=? WHERE id=?",
+            (status, school_dict["id"]),
+        )
+    return saved
+
+
 def save_staff(school_id: int, records: list[StaffRecord]) -> int:
     import datetime
     saved = 0
@@ -816,13 +1003,15 @@ def save_staff(school_id: int, records: list[StaffRecord]) -> int:
                 """
                 INSERT OR IGNORE INTO staff
                     (school_id, teacher_name, title, email, resolution_method,
-                     discipline, email_source, email_verified, evidence_url, added_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     discipline, email_source, email_verified, evidence_url,
+                     extraction_strategy, added_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    school_id, r.name, r.title, r.email,
+                    school_id, normalize_person_name(r.name), r.title, r.email,
                     "scraped" if r.email else "unresolved",
-                    r.discipline, r.email_source, int(bool(r.email_verified)), r.evidence_url, now,
+                    r.discipline, r.email_source, int(bool(r.email_verified)), r.evidence_url,
+                    r.extraction_strategy, now,
                 ),
             )
             if conn.execute("SELECT changes()").fetchone()[0]:
@@ -859,7 +1048,19 @@ async def run_scraper(
     on_progress=None,
     should_stop=None,
     concurrency: int | None = None,
+    persist_fn=None,
 ) -> None:
+    """`persist_fn(school_dict, records, status, paths_attempted, resolution,
+    directory_url, session) -> Awaitable[int]` decides where a school's
+    results land. Defaults to `_default_persist` (writes to this process's
+    own local database) — pass a different one (see
+    `src.remote_ingest.build_remote_persist_fn`) to push results to a
+    central server instead, e.g. for a scrape run on someone's home machine
+    whose results should land in the team's shared database rather than a
+    throwaway local file.
+    """
+    if persist_fn is None:
+        persist_fn = _default_persist
     # Top up states that haven't been re-ingested yet this process (see
     # _topped_up_states docstring above) — the on-disk NCES CSV can gain
     # schools between ingests, so a long-lived host's DB otherwise drifts
@@ -869,7 +1070,14 @@ async def run_scraper(
     if states_to_top_up:
         from .ingest import ingest_schools
         log.info("Topping up school list for %s from NCES data…", states_to_top_up)
-        ingest_schools(states_to_top_up)
+        # Announce this phase explicitly: parsing the national NCES CSV can
+        # take minutes on a slow host, and with no progress signal the UI
+        # looked hung at "Preparing…" with a Stop button that seemed dead.
+        if on_progress:
+            on_progress(0, 0, "Ingesting school list from NCES data…", "ingesting")
+        ingest_schools(states_to_top_up, should_stop=should_stop)
+        if should_stop and should_stop():
+            return  # ingest may have stopped partway — don't mark it topped up
         _topped_up_states.update(states_to_top_up)
 
     with get_conn() as conn:
@@ -884,7 +1092,9 @@ async def run_scraper(
                 list(states) + missed,
             ).rowcount
             log.info("Reset %d missed school(s) for re-scraping.", n)
-        q = """SELECT id, school_name, website_url, district_name, state FROM schools
+        q = """SELECT id, nces_id, school_name, city, website_url, district_name, state,
+                      school_level, is_arts_school
+               FROM schools
                WHERE scraped=0 AND state IN ({})
                ORDER BY is_arts_school DESC, school_name""".format(
             ",".join("?" * len(states))
@@ -897,6 +1107,13 @@ async def run_scraper(
     total = len(rows)
     if concurrency is None:
         concurrency = DEFAULT_CONCURRENCY
+    # Last chance to honor Stop before the expensive part: launching
+    # Chromium on a slow host can itself take long enough that a user has
+    # already given up and clicked Stop.
+    if should_stop and should_stop():
+        return
+    if on_progress:
+        on_progress(0, total, "Starting browser…", "starting")
     log.info("Scraping %d schools… (concurrency=%d)", total, concurrency)
     robots = RobotsCache()
 
@@ -922,7 +1139,7 @@ async def run_scraper(
 
     sem = asyncio.Semaphore(concurrency)
 
-    async with aiohttp.ClientSession(headers={"User-Agent": SCRAPER_UA}) as session:
+    async with aiohttp.ClientSession(headers={"User-Agent": BROWSER_UA}) as session:
         async with async_playwright() as pw:
             # --disable-dev-shm-usage: Docker's default /dev/shm is 64MB, far
             # below what Chromium wants. On a host that doesn't raise it (e.g.
@@ -952,13 +1169,10 @@ async def run_scraper(
                     )
                     log.info("  → %d art teacher(s) found. Status: %s (entity: %s)",
                               len(records), status, resolution.entity_type)
-                    saved = save_staff(school_dict["id"], records)
-                    _save_resolution(school_dict["id"], resolution, status, paths_attempted, directory_url)
-                    with get_conn() as conn:
-                        conn.execute(
-                            "UPDATE schools SET scraped=1, scrape_status=? WHERE id=?",
-                            (status, school_dict["id"]),
-                        )
+                    saved = await persist_fn(
+                        school_dict, records, status, paths_attempted, resolution,
+                        directory_url, session,
+                    )
                     log.info("  → %d new staff records saved.", saved)
                     completed += 1
                     if on_progress:

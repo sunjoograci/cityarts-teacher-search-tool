@@ -50,6 +50,15 @@ def main() -> None:
         action="store_true",
         help="Reset missed schools (no_directory_found, timeout, error:*) and scrape everything.",
     )
+    p_scrape.add_argument(
+        "--remote-url", default=None,
+        help="Push results to a central server's /api/ingest/school (e.g. http://1.2.3.4:8080) "
+             "instead of writing to this machine's local database.",
+    )
+    p_scrape.add_argument(
+        "--remote-secret", default=None,
+        help="X-Scrape-Secret value for --remote-url, if the server has SCRAPE_SHARED_SECRET set.",
+    )
 
     # enrich
     p_enrich = sub.add_parser("enrich", help="Enrich emails via Hunter.io / SMTP.")
@@ -63,6 +72,12 @@ def main() -> None:
     p_contacts.add_argument("--states", nargs="+", default=["KS"])
     p_contacts.add_argument("--limit", type=int, default=None)
     p_contacts.add_argument("--reset", action="store_true", help="Re-check records already marked contact_form")
+
+    # cleanup-names
+    sub.add_parser(
+        "cleanup-names",
+        help="One-time recase of ALL-CAPS/lowercase teacher names already in the database.",
+    )
 
     # export
     p_export = sub.add_parser("export", help="Export results as CSV.")
@@ -80,7 +95,13 @@ def main() -> None:
     elif args.command == "scrape":
         import asyncio
         from src.scraper import run_scraper
-        asyncio.run(run_scraper([s.upper() for s in args.states], args.limit, args.rescrape))
+        persist_fn = None
+        if args.remote_url:
+            from src.remote_ingest import build_remote_persist_fn
+            persist_fn = build_remote_persist_fn(args.remote_url, args.remote_secret)
+        asyncio.run(run_scraper(
+            [s.upper() for s in args.states], args.limit, args.rescrape, persist_fn=persist_fn,
+        ))
 
     elif args.command == "enrich":
         from src.enrich import enrich_staff
@@ -90,6 +111,11 @@ def main() -> None:
         import asyncio
         from src.contact_forms import run_contact_form_check
         asyncio.run(run_contact_form_check([s.upper() for s in args.states], args.limit, args.reset))
+
+    elif args.command == "cleanup-names":
+        from src.db import normalize_existing_names
+        n = normalize_existing_names()
+        print(f"Normalized {n} teacher name(s).")
 
     elif args.command == "export":
         from src.export import export_csv

@@ -329,7 +329,13 @@ def ingest_schools(
     states: list[str],
     limit: int | None = None,
     source_file: Path | None = None,
+    should_stop=None,
 ) -> int:
+    """`should_stop` is an optional zero-arg callable checked periodically so
+    a web-UI Stop request can abort mid-parse — the national CSV is 100k+
+    rows and can take minutes on a slow host. Stopping partway is safe
+    (INSERT OR IGNORE keyed on nces_id resumes cleanly next run), but the
+    caller must then NOT treat the state as fully ingested."""
     if source_file is None:
         download_nces()
         source_file = RAW_CSV
@@ -344,7 +350,10 @@ def ingest_schools(
     inserted = 0
 
     with get_conn() as conn:
-        for row in _iter_rows(source_file):
+        for row_i, row in enumerate(_iter_rows(source_file)):
+            if should_stop is not None and row_i % 2000 == 0 and should_stop():
+                log.info("Ingest stopped early by request (%d rows scanned).", row_i)
+                break
             state = (row.get("ST") or row.get("STABR") or "").strip().upper()
             if states_upper and state not in states_upper:
                 continue

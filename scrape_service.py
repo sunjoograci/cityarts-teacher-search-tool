@@ -86,10 +86,12 @@ def _run_scrape_thread(states: list[str], rescrape: bool) -> None:
         _scrape_state["total"] = total
         _scrape_state["current_school"] = school_name
         _scrape_state["last_status"] = status
-        # status != "scraping" means this school just finished (not the
-        # pre-scrape announcement) — publish now so partial progress survives
-        # even if the service restarts or the run is stopped mid-batch.
-        if status != "scraping":
+        # A real per-school terminal status means this school just finished —
+        # publish now so partial progress survives even if the service
+        # restarts or the run is stopped mid-batch. "scraping" is the
+        # pre-scrape announcement; "ingesting"/"starting" are run-setup
+        # phases during which nothing new is in the DB yet.
+        if status not in ("scraping", "ingesting", "starting"):
             publish_error = _publish_db()
             _scrape_state["published"] = publish_error or "ok"
 

@@ -33,11 +33,15 @@ cd "$APP_DIR"
 sudo docker build -t cityarts .
 
 echo "==> Starting app..."
+# --shm-size / SCRAPE_CONCURRENCY assume an Ampere A1 Flex box (4 OCPU /
+# 24GB). On anything smaller, scale both down (deploy.yml must match).
 sudo docker run -d \
   --name cityarts \
   --restart always \
+  --shm-size=1g \
   -v "$DATA_DIR":/data \
   -e DB_PATH=/data/schools.db \
+  -e SCRAPE_CONCURRENCY=4 \
   -p $PORT:$PORT \
   -e PORT=$PORT \
   cityarts

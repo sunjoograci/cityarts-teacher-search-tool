@@ -1,5 +1,9 @@
 playwright==1.44.0
 aiohttp==3.9.5
+# aiohttp can't decode content-encoding: br without this — school sites
+# behind Brotli-serving CDNs otherwise fail every probe with a decode error
+# and get falsely marked NO_DIRECTORY_FOUND.
+Brotli>=1.1
 requests==2.32.3
 python-dotenv==1.0.1
 dnspython==2.6.1

@@ -6,7 +6,9 @@ Run:
 Then open http://localhost:5000
 """
 import asyncio
+import datetime
 import io
+import json
 import os
 import sqlite3
 import threading
@@ -16,7 +18,7 @@ from pathlib import Path
 import requests
 from flask import Flask, jsonify, render_template, request, send_file
 
-from src.db import DB_PATH, get_conn, group_teacher_rows, init_db
+from src.db import DB_PATH, get_conn, group_teacher_rows, init_db, normalize_person_name
 
 app = Flask(__name__)
 
@@ -29,6 +31,17 @@ init_db()
 # ---------------------------------------------------------------------------
 _SCRAPER_SERVICE_URL = os.environ.get("SCRAPER_SERVICE_URL", "").rstrip("/")
 _SCRAPE_SHARED_SECRET = os.environ.get("SCRAPE_SHARED_SECRET")
+
+# ---------------------------------------------------------------------------
+# Remote ingest: when set, THIS instance's own scrapes push staff results to
+# a central server's /api/ingest/school instead of writing to its own local
+# database — the "run the scraper on your own machine, residential IP, but
+# the team still sees one shared dataset" mode. Absent (the default), this
+# app is itself the central server and /api/ingest/school below is what a
+# remote-mode instance talks to.
+# ---------------------------------------------------------------------------
+_REMOTE_INGEST_URL = os.environ.get("REMOTE_INGEST_URL", "").rstrip("/")
+_REMOTE_INGEST_SECRET = os.environ.get("REMOTE_INGEST_SECRET") or _SCRAPE_SHARED_SECRET
 
 # ---------------------------------------------------------------------------
 # Background scrape job state
@@ -62,9 +75,15 @@ def _run_scrape_thread(states: list[str], rescrape: bool) -> None:
     def should_stop():
         return _scrape_state["stop_requested"]
 
+    persist_fn = None
+    if _REMOTE_INGEST_URL:
+        from src.remote_ingest import build_remote_persist_fn
+        persist_fn = build_remote_persist_fn(_REMOTE_INGEST_URL, _REMOTE_INGEST_SECRET)
+
     try:
         asyncio.run(run_scraper(
             states, rescrape_missed=rescrape, on_progress=on_progress, should_stop=should_stop,
+            persist_fn=persist_fn,
         ))
     except Exception as exc:
         _scrape_state["error"] = str(exc)
@@ -166,6 +185,106 @@ def api_scrape_status():
     else:
         s["new_teachers"] = 0
     return jsonify(s)
+
+
+def _check_ingest_secret() -> bool:
+    if not _SCRAPE_SHARED_SECRET:
+        return True
+    return request.headers.get("X-Scrape-Secret") == _SCRAPE_SHARED_SECRET
+
+
+@app.route("/api/ingest/school", methods=["POST"])
+def api_ingest_school():
+    """Receives one school's scrape results from a remote-mode local
+    scraper (see src/remote_ingest.py) and merges them into this server's
+    shared database — the endpoint that makes distributed local scraping
+    (residential IPs, non-technical teammates) land in one dataset instead
+    of N separate SQLite files nobody can merge.
+
+    SECURITY NOTE: if SCRAPE_SHARED_SECRET is not set on this server, this
+    endpoint accepts writes from anyone who can reach it (same open-by-
+    default posture as /api/scrape/start). That's a materially bigger risk
+    here than for scrape/start — an unauthenticated caller could inject
+    junk data into the shared database, not just trigger a scrape — so set
+    SCRAPE_SHARED_SECRET before pointing any remote scraper at a
+    publicly-reachable server.
+    """
+    if not _check_ingest_secret():
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    school = data.get("school") or {}
+    nces_id = (school.get("nces_id") or "").strip()
+    if not nces_id:
+        return jsonify({"error": "school.nces_id is required"}), 400
+
+    resolution = data.get("resolution") or {}
+    status = data.get("status") or ""
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO schools
+                (nces_id, school_name, city, state, district_name, website_url,
+                 school_level, is_arts_school)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                nces_id, school.get("school_name") or "", school.get("city"),
+                (school.get("state") or "").upper(), school.get("district_name"),
+                school.get("website_url"), school.get("school_level"),
+                int(bool(school.get("is_arts_school"))),
+            ),
+        )
+        row = conn.execute("SELECT id FROM schools WHERE nces_id=?", (nces_id,)).fetchone()
+        school_id = row["id"]
+
+        conn.execute(
+            """
+            UPDATE schools SET
+                entity_type=?, parent_entity=?, parent_entity_type=?,
+                resolution_confidence=?, resolution_note=?, domain=?,
+                directory_url=?, paths_attempted=?, status=?, needs_human_review=?,
+                scraped=1, scrape_status=?
+            WHERE id=?
+            """,
+            (
+                resolution.get("entity_type"), resolution.get("parent_entity"),
+                resolution.get("parent_entity_type"), resolution.get("resolution_confidence"),
+                resolution.get("resolution_note"), resolution.get("domain"),
+                data.get("directory_url"), json.dumps(data.get("paths_attempted") or []),
+                status, int(bool(resolution.get("needs_human_review"))),
+                status, school_id,
+            ),
+        )
+
+        saved = 0
+        for r in data.get("records") or []:
+            name = normalize_person_name((r.get("name") or "").strip())
+            if not name:
+                continue
+            email = r.get("email")
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO staff
+                    (school_id, teacher_name, title, email, resolution_method,
+                     discipline, email_source, email_verified, evidence_url,
+                     extraction_strategy, added_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    school_id, name, r.get("title"), email,
+                    "scraped" if email else "unresolved",
+                    r.get("discipline"), r.get("email_source"),
+                    int(bool(r.get("email_verified"))), r.get("evidence_url"),
+                    r.get("extraction_strategy"), now,
+                ),
+            )
+            if conn.execute("SELECT changes()").fetchone()[0]:
+                saved += 1
+
+    return jsonify({"ok": True, "school_id": school_id, "saved": saved})
 
 
 def _get_stats() -> dict:

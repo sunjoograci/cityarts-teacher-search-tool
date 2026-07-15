@@ -61,8 +61,16 @@ _DISCIPLINE_TERMS: list[tuple[str, str]] = [
     (r"dance", "dance"),
     (r"choir|chorus|orchestra|band|music", "music"),
     (r"fine arts?", "unknown"),
-    (r"steam", "unknown"),
-    (r"specials?", "unknown"),
+    # "steam" was removed from this list: STEAM is Science/Tech/Engineering/
+    # Arts/Math — not an arts-role signal — and worse, campus names like
+    # "STEAM Academy at Mambrino" appear in the title/campus column of
+    # district-wide directories, which made every employee of such a school
+    # (~100 people, teachers of everything) classify as an art teacher.
+    # Plural only: "Specials" is the elementary art/music/PE rotation, but
+    # the singular "special" appears in decidedly non-art roles ("Special
+    # Education", "Special Services Director", "Special Programs") and was
+    # matching all of them.
+    (r"specials", "unknown"),
     (r"enrichment", "unknown"),
     (r"\bart\b", "visual art"),
 ]

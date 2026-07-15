@@ -1,5 +1,6 @@
 """SQLite database setup and helpers."""
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -12,6 +13,55 @@ def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# Generational suffixes that must stay uppercase — "Robert Smith III" must
+# not become "Robert Smith Iii".
+_ROMAN_SUFFIX_RE = re.compile(r"^(?:II|III|IV|V)$", re.IGNORECASE)
+
+
+def _recase_word(word: str) -> str:
+    if _ROMAN_SUFFIX_RE.match(word.strip(".,")):
+        return word.upper()
+    # Capitalize each alphabetic run, so hyphens/apostrophes reset the
+    # capital: "O'BRIEN-SMITH" -> "O'Brien-Smith".
+    return re.sub(r"[A-Za-z]+", lambda m: m.group(0).capitalize(), word)
+
+
+def normalize_person_name(name: str) -> str:
+    """Recase scraped names that arrived ALL-CAPS or all-lowercase (both are
+    site-formatting artifacts, e.g. table headers styled with CSS
+    text-transform that innerText preserves). Words that already have mixed
+    case are left untouched — "McAllister" must not become "Mcallister", so
+    only fully-upper or fully-lower words are rewritten.
+    """
+    return " ".join(
+        _recase_word(w) if (w.isupper() or w.islower()) else w
+        for w in name.split()
+    )
+
+
+def normalize_existing_names() -> int:
+    """One-time cleanup pass over rows saved before names were normalized on
+    save. Returns the number of rows changed. If recasing a name collides
+    with an existing properly-cased row for the same school (UNIQUE
+    constraint), the badly-cased row is the duplicate and is deleted.
+    """
+    changed = 0
+    with get_conn() as conn:
+        rows = conn.execute("SELECT id, teacher_name FROM staff").fetchall()
+        for row in rows:
+            fixed = normalize_person_name(row["teacher_name"])
+            if fixed == row["teacher_name"]:
+                continue
+            try:
+                conn.execute(
+                    "UPDATE staff SET teacher_name=? WHERE id=?", (fixed, row["id"])
+                )
+            except sqlite3.IntegrityError:
+                conn.execute("DELETE FROM staff WHERE id=?", (row["id"],))
+            changed += 1
+    return changed
 
 
 def group_teacher_rows(rows) -> list[dict]:
@@ -125,6 +175,8 @@ _STAFF_NEW_COLUMNS = [
     ("email_verified", "INTEGER DEFAULT 0"),
     ("evidence_url", "TEXT"),
     ("added_at", "TEXT"),
+    ("extraction_strategy", "TEXT"),       # semantic_card | name_title_line | table_row |
+                                           # generic_block | mailto_context | text_scan
 ]
 
 
