@@ -113,6 +113,35 @@ def extract_discipline(text: str) -> str:
     return "unknown"
 
 
+# Roles explicitly out of scope for this project, per operator directive —
+# checked as its own hard exclusion, separate from is_art_related()/
+# classify() above. This matters specifically for permissive extraction (an
+# arts-department fallback page): that mode does not gate candidates on
+# is_art_related() at all, since a school's combined "Fine Arts" department
+# roster legitimately lists these roles right alongside the visual-art ones
+# that ARE wanted — so exclusion has to be enforced separately, not just
+# achieved by omission from the inclusion list.
+#
+# Scope is visual/design art only — every performing-arts discipline
+# (music, band, orchestra, choir, dance, theatre/drama) is excluded, along
+# with special education. "drama" is included alongside "theatre"/"theater"
+# since schools use it interchangeably for the identical role.
+_EXCLUDED_ROLE_RE = re.compile(
+    r"\b(choir|chorus|chorale|orchestra|orchestral|band|music|vocal|instrumental|"
+    r"dance|dancer|theatre|theater|drama|"
+    r"special\s*education|sped|special\s+needs)\b",
+    re.IGNORECASE,
+)
+
+
+def is_excluded_role(text: str) -> bool:
+    """True if this title/department names a role explicitly out of scope
+    for this project (any performing-arts discipline, special education) —
+    independent of is_art_related()/classify(). Applied as a final filter
+    regardless of which extraction strategy produced the candidate."""
+    return bool(_EXCLUDED_ROLE_RE.search(text or ""))
+
+
 def classify(title: str, department: str | None = None) -> ArtClassification:
     """Classify a title (optionally with a department string for context)."""
     combined = " ".join(t for t in (title, department) if t)

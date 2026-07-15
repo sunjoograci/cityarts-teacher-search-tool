@@ -726,6 +726,12 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
                         ))
                         break
 
+    # Explicit project-scope exclusion (music/band/choir/orchestra, special
+    # education) — applied once, uniformly, across every strategy above,
+    # including permissive mode, which does not otherwise gate on
+    # is_art_related() at all. See art_classifier.is_excluded_role.
+    records = [r for r in records if not art_classifier.is_excluded_role(r.title)]
+
     # Deduplicate by name
     seen: set[str] = set()
     unique: list[StaffRecord] = []
