@@ -6,3 +6,12 @@ dnspython==2.6.1
 openpyxl>=3.1
 flask>=3.0
 gunicorn>=22.0
+pytest>=8.0
+
+# Optional — enable PDF-text and OCR fallbacks in access_strategies.py /
+# email_decoder.py. Both degrade gracefully (return "unavailable"/no result)
+# if not installed; pytesseract additionally needs the Tesseract binary
+# installed on the system (not pip-installable) to actually run OCR.
+pypdf>=4.0
+pytesseract>=0.3
+Pillow>=10.0

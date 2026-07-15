@@ -26,11 +26,20 @@ jobs:
             sudo docker build -t cityarts .
             sudo docker stop cityarts 2>/dev/null || true
             sudo docker rm cityarts 2>/dev/null || true
+            # This host is an Always Free micro instance (1/8 OCPU, 1GB RAM
+            # total) — --shm-size=1gb would reserve the box's *entire* RAM
+            # as shared memory alone, so it's kept modest instead. Chromium
+            # concurrency is pinned to 1: even two concurrent headless
+            # Chromium instances contend badly for both the fractional CPU
+            # and the 1GB ceiling (Render's SCRAPE_CONCURRENCY=4 assumes far
+            # more headroom than this box has).
             sudo docker run -d \
               --name cityarts \
               --restart always \
+              --shm-size=256m \
               -v /data:/data \
               -e DB_PATH=/data/schools.db \
+              -e SCRAPE_CONCURRENCY=1 \
               -p 8080:8080 \
               -e PORT=8080 \
               cityarts
