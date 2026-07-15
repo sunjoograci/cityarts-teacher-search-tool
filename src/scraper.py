@@ -743,6 +743,85 @@ async def _extract_staff(page: Page, evidence_url: str, permissive: bool = False
     return unique
 
 
+# ---------------------------------------------------------------------------
+# District-wide roster misattribution.
+#
+# Root cause: `district_dir_cache` (see run_scraper/scrape_school) reuses a
+# discovered directory URL across every sibling campus in a district once
+# it's proven to yield real records — a legitimate optimization when the
+# directory is genuinely campus-specific. But some districts publish ONE
+# combined roster page for the whole district instead, with each row tagged
+# by campus (e.g. "Landry - Art", or "Art Teacher - FJH" using a campus
+# abbreviation). Nothing previously checked that tag against which campus
+# was actually being scraped, so re-visiting that same URL for every sibling
+# school attributed ALL ~40 district-wide rows to EACH campus individually —
+# a real teacher who only works at Landry Elementary would end up saved as
+# staff of Landry, Blalack, Bush, Creekview, AND Field, all five, with the
+# other four being simply wrong. Confirmed in production data (Carrollton-
+# Farmers Branch ISD, Deer Park ISD) via audit: 616+ duplicate attributions
+# traced back to this exact pattern.
+#
+# Fix: detect a per-row campus tag in the title, and when a SINGLE
+# extraction pass contains 2+ DISTINCT tags (the direct, self-contained
+# signal that the page just scraped is a shared multi-campus roster, not a
+# campus-specific one), keep only rows whose tag plausibly names the
+# CURRENT school. Titles with no such tag at all (the overwhelming
+# majority) are never touched by this — the 2+ distinct-tag gate means it
+# only ever activates on pages that have already proven to mix campuses.
+# ---------------------------------------------------------------------------
+
+# Leading tag: "Landry - Art", "McKamy - Art Teacher"
+_CAMPUS_TAG_LEADING_RE = re.compile(r"^([A-Z][A-Za-z']+(?:\s+[A-Z][A-Za-z']+)?)\s*-\s*(.+)$")
+# Trailing tag: "Art Teacher - FJH", "Art Teacher - DPJH" (2-6 letter
+# all-caps abbreviation, optionally with one trailing lowercase OCR/typo
+# character e.g. "DWJHt")
+_CAMPUS_TAG_TRAILING_RE = re.compile(r"^(.+?)\s*-\s*([A-Z]{2,6}[a-z]?)$")
+
+
+def _extract_campus_tag(title: str) -> Optional[str]:
+    """Best-effort extraction of a per-row campus tag from a title. Returns
+    None for the vast majority of titles, which don't carry this pattern at
+    all — see the module note above this function."""
+    title = (title or "").strip()
+    if not title:
+        return None
+    m = _CAMPUS_TAG_TRAILING_RE.match(title)
+    if m:
+        return m.group(2)
+    m = _CAMPUS_TAG_LEADING_RE.match(title)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _campus_tag_matches_school(tag: str, school_name: Optional[str]) -> bool:
+    """Loose match: could `tag` plausibly refer to `school_name`? Checks
+    both a substring match against the school's significant words (handles
+    "Landry" matching "Landry Elementary School") and an acronym built from
+    those words (handles "FJH" matching "Fairmont Junior High")."""
+    words = [w for w in re.findall(r"[A-Za-z']+", school_name or "") if len(w) > 2]
+    if not words:
+        return False
+    tag_l = tag.lower()
+    if any(tag_l == w.lower() or tag_l in w.lower() or w.lower() in tag_l for w in words):
+        return True
+    acronym = "".join(w[0] for w in words).lower()
+    return tag_l == acronym
+
+
+def _drop_mismatched_campus_records(
+    records: list[StaffRecord], school_name: Optional[str]
+) -> list[StaffRecord]:
+    tagged = [(r, _extract_campus_tag(r.title)) for r in records]
+    distinct_tags = {t for _, t in tagged if t}
+    if len(distinct_tags) < 2:
+        return records  # no evidence this page mixes multiple campuses
+    return [
+        r for r, tag in tagged
+        if tag is None or _campus_tag_matches_school(tag, school_name)
+    ]
+
+
 def _drop_school_name_titles(records: list[StaffRecord], school_name: Optional[str]) -> list[StaffRecord]:
     """A "title" that's just the school's own name is a page heading (e.g. a
     nav crumb or <h1>) misread as a job title, not a real role — no one's
@@ -932,6 +1011,7 @@ async def scrape_school(
                 arts_page_used = bool(records)
 
         records = _drop_school_name_titles(records, school.get("school_name"))
+        records = _drop_mismatched_campus_records(records, school.get("school_name"))
 
         seen = {r.name.lower() for r in records}
         deduped = []
