@@ -15,7 +15,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        # Two macOS entries, not one: PyInstaller builds natively for
+        # whatever chip it runs on, and an arm64-only build cannot run at
+        # all on an Intel Mac (no Rosetta translation in that direction —
+        # confirmed the hard way: "not supported on this Mac" on a real
+        # Intel office machine). macos-15-intel is GitHub's current Intel
+        # label (macos-13 was retired Dec 2025); it's supported through
+        # roughly Fall 2027, after which Intel Mac support on GitHub-hosted
+        # runners goes away entirely and this will need revisiting.
+        os: [windows-latest, macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +70,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cd dist
-          ditto -c -k --sequesterRsrc --keepParent CityArtsTeacherFinder.app CityArtsTeacherFinder-mac.zip
+          ditto -c -k --sequesterRsrc --keepParent CityArtsTeacherFinder.app "CityArtsTeacherFinder-mac-${{ runner.arch }}.zip"
 
       - name: Upload Windows build
         if: runner.os == 'Windows'
@@ -72,10 +80,17 @@ jobs:
           path: dist/CityArtsTeacherFinder.exe
           retention-days: 90
 
+      # Two separate macOS artifacts (ARM64 = Apple Silicon, X64 = Intel) —
+      # not one universal2 binary. A merged universal2 build needs every
+      # dependency with a C extension (aiohttp, Brotli, Pillow, playwright's
+      # driver, etc.) available as a universal2/dual-arch wheel, which
+      # isn't guaranteed; two native single-arch builds are slower to
+      # distribute (two files) but can't be broken by a missing wheel for
+      # one arch silently poisoning the other.
       - name: Upload macOS build
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: CityArtsTeacherFinder-mac
-          path: dist/CityArtsTeacherFinder-mac.zip
+          name: CityArtsTeacherFinder-mac-${{ runner.arch }}
+          path: dist/CityArtsTeacherFinder-mac-${{ runner.arch }}.zip
           retention-days: 90

@@ -9,11 +9,18 @@ You do **not** need to install Python, or anything else beforehand.
 
 ## 1. Download
 
-Get the installer for your computer from the link your team sent you:
+Get the installer for your computer from the link your team sent you.
 
-- Windows: `CityArtsTeacherFinder.exe`
-- Mac: `CityArtsTeacherFinder-mac.zip` — unzip it first, you'll get
-  `CityArtsTeacherFinder.app`
+- **Windows:** `CityArtsTeacherFinder.exe`
+- **Mac:** there are two versions — you need the one matching your Mac's
+  chip, or it won't open at all. Check first: **Apple menu → About This
+  Mac**.
+  - Says **"Chip"** (e.g. Apple M1/M2/M3/M4) → download
+    `CityArtsTeacherFinder-mac-ARM64.zip`
+  - Says **"Processor"** (e.g. Intel Core i5/i7) → download
+    `CityArtsTeacherFinder-mac-X64.zip`
+
+  Unzip it, you'll get `CityArtsTeacherFinder.app`.
 
 ## 2. First open: your computer will warn you
 
@@ -56,6 +63,10 @@ you don't need to export or send anyone a file.
 
 ## Troubleshooting
 
+- **"You can't open the application because it is not supported on this
+  Mac"** — you downloaded the wrong version. Check **Apple menu → About
+  This Mac** for "Chip" vs "Processor" and grab the matching file (see
+  Download step above).
 - **Nothing happens after clicking "Run anyway" / "Open"** — give it 10–15
   seconds; it's starting up in the background before it opens your browser.
 - **The progress window seems frozen** — check your internet connection;
