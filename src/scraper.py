@@ -73,8 +73,22 @@ STAFF_CONTENT_SELECTOR = (
 
 DELAY_BETWEEN_REQUESTS = 2.5  # seconds, used when robots.txt has no Crawl-delay
 
-DEFAULT_CONCURRENCY = int(os.environ.get("SCRAPE_CONCURRENCY", "4"))
+# Single-machine, yield-over-speed deployment (one office Windows PC, no
+# time pressure): fewer concurrent Chromium contexts means each one gets
+# more of that one machine's CPU/network budget to actually finish
+# rendering within its wait window, rather than more schools racing each
+# other for the same resources and more of them timing out short. Lower
+# this back up via SCRAPE_CONCURRENCY if throughput ever matters more than
+# yield on a given run.
+DEFAULT_CONCURRENCY = int(os.environ.get("SCRAPE_CONCURRENCY", "2"))
 PROBE_TIMEOUT = 6.0
+
+# How long to wait for real staff content to render after a directory page
+# loads (see STAFF_CONTENT_SELECTOR below) before giving up and extracting
+# whatever's there. Generous on purpose: yield matters more than speed for
+# this deployment, and a slow-rendering JS-heavy CMS getting cut off early
+# is a silent, wrongly-reported "no teachers" rather than a visible error.
+CONTENT_WAIT_MS = int(os.environ.get("SCRAPE_CONTENT_WAIT_MS", "20000"))
 
 # Identity used for robots.txt rule matching — the honest crawler name.
 SCRAPER_UA = "Mozilla/5.0 (compatible; CityArts-TeacherFinder/1.0; +https://cityarts.org)"
@@ -1018,7 +1032,7 @@ async def scrape_school(
         # every machine/connection. Wait for the content itself (up to 8s,
         # falling through immediately once it shows up) instead of
         # guessing a fixed delay.
-        await acc.wait_for_dynamic_content(page, STAFF_CONTENT_SELECTOR)
+        await acc.wait_for_dynamic_content(page, STAFF_CONTENT_SELECTOR, timeout=CONTENT_WAIT_MS)
         records = await _extract_staff(page, dir_url, permissive=False)
 
         # A-Z letter index (Burnham Wood-style): visit every present letter,
@@ -1053,7 +1067,7 @@ async def scrape_school(
             attempts.extend(a.__dict__ for a in dept_attempts)
             if hit:
                 await page.goto(hit.url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-                await acc.wait_for_dynamic_content(page, STAFF_CONTENT_SELECTOR)
+                await acc.wait_for_dynamic_content(page, STAFF_CONTENT_SELECTOR, timeout=CONTENT_WAIT_MS)
                 records = await _extract_staff(page, hit.url, permissive=True)
                 arts_page_used = bool(records)
 
