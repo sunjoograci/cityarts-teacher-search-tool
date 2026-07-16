@@ -60,6 +60,17 @@ def _clean_title(text: str) -> str:
 STAFF_KEYWORD_RE = re.compile(r"\b(teacher|instructor|staff|faculty)\b", re.IGNORECASE)
 ARTS_KEYWORD_RE = re.compile(r"\b(art|visual arts?|fine arts?)\b", re.IGNORECASE)
 
+# Matches _extract_staff's own Strategy 1/2 selectors (minus the bare "tr,
+# li" — those match on virtually any page instantly, including before a
+# JS-rendered staff list has actually populated, so waiting on them isn't a
+# real signal). Used to wait for the directory's real content instead of a
+# blind fixed sleep — see the NAV_TIMEOUT_MS comment above for why a fixed
+# short wait was risky.
+STAFF_CONTENT_SELECTOR = (
+    "[class*='name'], [class*='staff'], [class*='faculty'], "
+    "[class*='employee'], [class*='person'], [class*='card']"
+)
+
 DELAY_BETWEEN_REQUESTS = 2.5  # seconds, used when robots.txt has no Crawl-delay
 
 DEFAULT_CONCURRENCY = int(os.environ.get("SCRAPE_CONCURRENCY", "4"))
@@ -1000,7 +1011,14 @@ async def scrape_school(
             await acc.submit_blank_form(page)
             await acc.wait_for_dynamic_content(page, "body")
 
-        await asyncio.sleep(1.0)
+        # A fixed sleep here used to gate every extraction attempt — fine
+        # for a mostly-static page, but a JS-heavy CMS (Finalsite,
+        # Blackboard, Apptegy — all fingerprinted above) populates its
+        # staff cards client-side, and a flat 1s isn't guaranteed enough on
+        # every machine/connection. Wait for the content itself (up to 8s,
+        # falling through immediately once it shows up) instead of
+        # guessing a fixed delay.
+        await acc.wait_for_dynamic_content(page, STAFF_CONTENT_SELECTOR)
         records = await _extract_staff(page, dir_url, permissive=False)
 
         # A-Z letter index (Burnham Wood-style): visit every present letter,
@@ -1035,7 +1053,7 @@ async def scrape_school(
             attempts.extend(a.__dict__ for a in dept_attempts)
             if hit:
                 await page.goto(hit.url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-                await asyncio.sleep(1.0)
+                await acc.wait_for_dynamic_content(page, STAFF_CONTENT_SELECTOR)
                 records = await _extract_staff(page, hit.url, permissive=True)
                 arts_page_used = bool(records)
 
