@@ -44,6 +44,7 @@ _scrape_state: dict = {
     "rescrape": False,
     "published": None,
     "stop_requested": False,
+    "saved_this_run": 0,
 }
 
 
@@ -81,11 +82,12 @@ def _publish_db() -> str | None:
 def _run_scrape_thread(states: list[str], rescrape: bool) -> None:
     from src.scraper import run_scraper
 
-    def on_progress(current, total, school_name, status):
+    def on_progress(current, total, school_name, status, saved_total):
         _scrape_state["current"] = current
         _scrape_state["total"] = total
         _scrape_state["current_school"] = school_name
         _scrape_state["last_status"] = status
+        _scrape_state["saved_this_run"] = saved_total
         # A real per-school terminal status means this school just finished —
         # publish now so partial progress survives even if the service
         # restarts or the run is stopped mid-batch. "scraping" is the
@@ -134,6 +136,7 @@ def scrape_start():
             "rescrape": rescrape,
             "published": None,
             "stop_requested": False,
+            "saved_this_run": 0,
         })
     threading.Thread(target=_run_scrape_thread, args=(states, rescrape), daemon=True).start()
     return jsonify({"ok": True})

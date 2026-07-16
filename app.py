@@ -61,17 +61,19 @@ _scrape_state: dict = {
     "states": [],
     "rescrape": False,
     "stop_requested": False,
+    "saved_this_run": 0,
 }
 
 
 def _run_scrape_thread(states: list[str], rescrape: bool, limit: int | None = None) -> None:
     from src.scraper import run_scraper
 
-    def on_progress(current, total, school_name, status):
+    def on_progress(current, total, school_name, status, saved_total):
         _scrape_state["current"] = current
         _scrape_state["total"] = total
         _scrape_state["current_school"] = school_name
         _scrape_state["last_status"] = status
+        _scrape_state["saved_this_run"] = saved_total
 
     def should_stop():
         return _scrape_state["stop_requested"]
@@ -132,6 +134,7 @@ def api_scrape_start():
             "states": states,
             "rescrape": rescrape,
             "stop_requested": False,
+            "saved_this_run": 0,
         })
     threading.Thread(target=_run_scrape_thread, args=(states, rescrape, limit), daemon=True).start()
     return jsonify({"ok": True})
@@ -179,14 +182,14 @@ def api_scrape_status():
     s["elapsed"] = elapsed
     s["eta"] = eta
     s["started_at_iso"] = started_at_iso
-    # Count teachers added during this scrape session
-    if started_at_iso and DB_PATH.exists():
-        with get_conn() as conn:
-            s["new_teachers"] = conn.execute(
-                "SELECT COUNT(*) FROM staff WHERE added_at >= ?", (started_at_iso,)
-            ).fetchone()[0]
-    else:
-        s["new_teachers"] = 0
+    # "saved_this_run" (a running total of what persist_fn actually saved,
+    # threaded through run_scraper's on_progress) rather than querying this
+    # process's own staff table by timestamp: in remote-ingest mode (the
+    # desktop app pushing to a shared central server) that table never gets
+    # written at all, so the old query-based count always silently read 0
+    # regardless of how many teachers were actually found and saved
+    # remotely. saved_this_run is accurate in both modes.
+    s["new_teachers"] = s.get("saved_this_run", 0)
     return jsonify(s)
 
 

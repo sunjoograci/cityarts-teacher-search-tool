@@ -1153,6 +1153,14 @@ async def run_scraper(
     central server instead, e.g. for a scrape run on someone's home machine
     whose results should land in the team's shared database rather than a
     throwaway local file.
+
+    `on_progress(current, total, school_name, status, saved_total)` is
+    called with a running total of persist_fn's returned save counts —
+    the caller's own source of truth for "how many were actually saved this
+    run," rather than the caller re-querying its own local staff table
+    (which stays empty, and would always misreport 0, when persist_fn is
+    the remote one: results went to the central server's database, not
+    this process's).
     """
     if persist_fn is None:
         persist_fn = _default_persist
@@ -1169,7 +1177,7 @@ async def run_scraper(
         # take minutes on a slow host, and with no progress signal the UI
         # looked hung at "Preparing…" with a Stop button that seemed dead.
         if on_progress:
-            on_progress(0, 0, "Ingesting school list from NCES data…", "ingesting")
+            on_progress(0, 0, "Ingesting school list from NCES data…", "ingesting", 0)
         ingest_schools(states_to_top_up, should_stop=should_stop)
         if should_stop and should_stop():
             return  # ingest may have stopped partway — don't mark it topped up
@@ -1229,11 +1237,12 @@ async def run_scraper(
     if should_stop and should_stop():
         return
     if on_progress:
-        on_progress(0, total, "Starting browser…", "starting")
+        on_progress(0, total, "Starting browser…", "starting", 0)
     log.info("Scraping %d schools… (concurrency=%d)", total, concurrency)
     robots = RobotsCache()
 
     completed = 0
+    total_saved = 0
     domain_locks: dict[str, asyncio.Lock] = {}
     domain_last_start: dict[str, float] = {}
     district_dir_cache: dict[str, pd.PathCandidate] = {}
@@ -1269,7 +1278,7 @@ async def run_scraper(
             )
 
             async def worker(school_row) -> None:
-                nonlocal completed
+                nonlocal completed, total_saved
                 school_dict = dict(school_row)
                 async with sem:
                     if should_stop and should_stop():
@@ -1279,7 +1288,7 @@ async def run_scraper(
                     log.info("[%d/%d] %s (%s)", completed + 1, total,
                              school_dict["school_name"], school_dict["website_url"])
                     if on_progress:
-                        on_progress(completed + 1, total, school_dict["school_name"], "scraping")
+                        on_progress(completed + 1, total, school_dict["school_name"], "scraping", total_saved)
                     records, status, paths_attempted, resolution, directory_url = await scrape_school(
                         browser, school_dict, robots, session, district_dir_cache,
                     )
@@ -1291,8 +1300,9 @@ async def run_scraper(
                     )
                     log.info("  → %d new staff records saved.", saved)
                     completed += 1
+                    total_saved += saved
                     if on_progress:
-                        on_progress(completed, total, school_dict["school_name"], status)
+                        on_progress(completed, total, school_dict["school_name"], status, total_saved)
 
             # `should_stop` is only checked at the semaphore gate above, so a
             # school already in flight (mid page.goto, mid directory probing)
