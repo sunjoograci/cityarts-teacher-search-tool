@@ -60,14 +60,20 @@ by default. Which warning you see depends on your macOS version:
 
 You only have to do this once per computer.
 
-## 3. First launch: a one-time download
+## 3. First launch: two one-time setup steps
 
-The first time it opens, you'll see a small window that says something
-like "Preparing the scraper (first launch only)…" with a progress bar.
-It's downloading the browser component it needs (about 150MB) — this can
-take a few minutes depending on your internet speed. **Don't close the
-window** — it isn't stuck, just leave it. This only happens once; every
-launch after this is fast.
+The first time it opens, you'll see a couple of small windows in a row —
+neither is stuck, just leave them:
+
+1. **"Preparing the scraper (first launch only)…"** — downloading the
+   browser component it needs (about 150MB). Can take a few minutes
+   depending on your internet speed.
+2. **"Loading the national school directory (first launch only)…"** —
+   downloading the list of every public school in the country so it's
+   ready the moment you pick a state to scrape. Can also take a minute or
+   two.
+
+Both only happen once; every launch after this is fast.
 
 ## 4. Using it
 

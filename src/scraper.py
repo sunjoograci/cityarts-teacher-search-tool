@@ -113,6 +113,15 @@ MISSED_STATUSES = (
 # on a resource-constrained host that wait alone can dwarf the scrape itself.
 _topped_up_states: set[str] = set()
 
+
+def mark_states_ingested(states: list[str]) -> None:
+    """Record states as already topped up without going through
+    run_scraper()'s own ingest call — for a caller (desktop_app.py's
+    startup ingest) that ingested them some other way and wants
+    run_scraper() to skip redoing that full CSV scan on the first
+    Start Scraping click."""
+    _topped_up_states.update(s.upper() for s in states)
+
 # Pre-refactor status strings written by scraper versions older than the
 # STATUS_* constants above (deployments whose database predates that rebuild,
 # e.g. a long-lived Oracle/VM host, will have rows stuck with these forever

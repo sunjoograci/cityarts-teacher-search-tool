@@ -32,6 +32,20 @@ NCES_CANDIDATE_URLS = [
     "https://nces.ed.gov/ccd/Data/zip/ccd_sch_029_1819_w_0a_04082019_csv.zip",
 ]
 
+# All 50 states + DC, matching templates/index.html's US_STATES dropdown —
+# used to ingest the whole national school list in one pass (see
+# desktop_app.py's startup ingestion) instead of one state at a time, since
+# ingest_schools() scans the entire national CSV regardless of how many
+# states it's filtering for; ingesting them all in a single scan is cheaper
+# than re-scanning the same file once per state as each gets picked.
+ALL_US_STATES = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI",
+    "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN",
+    "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH",
+    "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA",
+    "WV", "WI", "WY",
+]
+
 DATA_DIR = user_data_dir()
 RAW_ZIP = DATA_DIR / "nces_ccd.zip"
 RAW_CSV = DATA_DIR / "nces_ccd.csv"
@@ -382,12 +396,18 @@ def ingest_schools(
     limit: int | None = None,
     source_file: Path | None = None,
     should_stop=None,
+    on_progress=None,
 ) -> int:
     """`should_stop` is an optional zero-arg callable checked periodically so
     a web-UI Stop request can abort mid-parse — the national CSV is 100k+
     rows and can take minutes on a slow host. Stopping partway is safe
     (INSERT OR IGNORE keyed on nces_id resumes cleanly next run), but the
-    caller must then NOT treat the state as fully ingested."""
+    caller must then NOT treat the state as fully ingested.
+
+    `on_progress(rows_scanned, schools_inserted)` is an optional callback
+    invoked periodically (same cadence as should_stop) so a caller doing a
+    long all-states ingest (see desktop_app.py) can show the user something
+    other than a frozen-looking window."""
     if source_file is None:
         download_nces()
         source_file = RAW_CSV
@@ -403,9 +423,12 @@ def ingest_schools(
 
     with get_conn() as conn:
         for row_i, row in enumerate(_iter_rows(source_file)):
-            if should_stop is not None and row_i % 2000 == 0 and should_stop():
-                log.info("Ingest stopped early by request (%d rows scanned).", row_i)
-                break
+            if row_i % 2000 == 0:
+                if should_stop is not None and should_stop():
+                    log.info("Ingest stopped early by request (%d rows scanned).", row_i)
+                    break
+                if on_progress is not None:
+                    on_progress(row_i, inserted)
             state = (row.get("ST") or row.get("STABR") or "").strip().upper()
             if states_upper and state not in states_upper:
                 continue
