@@ -16,10 +16,11 @@ import html.parser
 import logging
 import re
 import sqlite3
-import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Iterator
+
+import requests
 
 from .db import get_conn, init_db, smart_title_case
 from .paths import user_data_dir
@@ -29,6 +30,20 @@ log = logging.getLogger(__name__)
 NCES_CANDIDATE_URLS = [
     "https://nces.ed.gov/sites/default/files/data-asset/ccd-common-core-data/2025/08/2024-25-common-core-data-ccd-preliminary-directory-files/2025046%20Preliminary%20Data%20Release%20CCD%20Nonfiscal_0.zip",
     "https://nces.ed.gov/ccd/Data/zip/ccd_sch_029_1819_w_0a_04082019_csv.zip",
+]
+
+# All 50 states + DC, matching templates/index.html's US_STATES dropdown —
+# used to ingest the whole national school list in one pass (see
+# desktop_app.py's startup ingestion) instead of one state at a time, since
+# ingest_schools() scans the entire national CSV regardless of how many
+# states it's filtering for; ingesting them all in a single scan is cheaper
+# than re-scanning the same file once per state as each gets picked.
+ALL_US_STATES = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI",
+    "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN",
+    "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH",
+    "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA",
+    "WV", "WI", "WY",
 ]
 
 DATA_DIR = user_data_dir()
@@ -291,35 +306,85 @@ def download_nces(force: bool = False) -> None:
 
     if not RAW_ZIP.exists() or force:
         downloaded = False
+        failures = []
         for url in NCES_CANDIDATE_URLS:
             try:
                 log.info("Trying NCES URL: %s", url)
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    if resp.status == 200:
-                        RAW_ZIP.write_bytes(resp.read())
-                        log.info("Download complete from %s", url)
-                        downloaded = True
-                        break
+                # requests (not urllib.request) specifically because it
+                # bundles its own certifi CA store — a PyInstaller-frozen
+                # macOS build doesn't ship the system Python's
+                # "Install Certificates.command" trust setup that
+                # urllib/ssl's default context relies on, so urlopen()
+                # there was failing every HTTPS request with
+                # CERTIFICATE_VERIFY_FAILED while silently reporting as a
+                # generic "download failed" with no visible reason.
+                resp = requests.get(
+                    url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30,
+                )
+                resp.raise_for_status()
+                RAW_ZIP.write_bytes(resp.content)
+                log.info("Download complete from %s", url)
+                downloaded = True
+                break
             except Exception as exc:
-                log.debug("  Failed (%s): %s", url, exc)
+                log.warning("  Failed (%s): %s", url, exc)
+                failures.append(f"{url}: {exc}")
 
         if not downloaded:
             print(MANUAL_DOWNLOAD_INSTRUCTIONS.format(csv_path=RAW_CSV))
-            raise SystemExit(
-                "Automatic download failed. See instructions above to download manually."
+            # RuntimeError, not SystemExit: the desktop app's scrape thread
+            # (app.py's _run_scrape_thread) only catches `Exception` to
+            # surface it as the scrape's reported error. SystemExit is a
+            # BaseException, so it used to skip that except clause
+            # entirely and the UI reported the scrape as finished with 0
+            # results instead of showing this failure at all.
+            raise RuntimeError(
+                "Automatic download of the school list failed ("
+                + "; ".join(failures) + "). See instructions above/in "
+                "MANUAL_DOWNLOAD_INSTRUCTIONS to download manually."
             )
 
     with zipfile.ZipFile(RAW_ZIP) as zf:
         csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
         if not csv_names:
             raise RuntimeError("No CSV found in NCES zip archive.")
-        school_csvs = [n for n in csv_names if "_sch_" in n.lower()]
-        chosen = school_csvs[0] if school_csvs else csv_names[0]
+        chosen = _pick_school_csv(zf, csv_names)
         log.info("Extracting %s", chosen)
         with zf.open(chosen) as src, open(RAW_CSV, "wb") as dst:
             dst.write(src.read())
     log.info("Extracted %s", RAW_CSV.name)
+
+
+def _looks_like_school_csv(zf: zipfile.ZipFile, name: str) -> bool:
+    """Peek at just the header row and check it has the columns school
+    ingestion actually needs, rather than trusting the filename."""
+    with zf.open(name) as fh:
+        header_line = fh.readline().decode("utf-8-sig", errors="replace")
+    headers = {_normalize_col(c) for c in next(csv.reader([header_line]))}
+    return "NCESSCH" in headers and "SCH_NAME" in headers
+
+
+def _pick_school_csv(zf: zipfile.ZipFile, csv_names: list[str]) -> str:
+    """A CCD "Nonfiscal" release zip bundles school-, LEA(district)-, and
+    state-level directory files together, and NCES has changed its filename
+    convention between releases. Picking by a "_sch_" substring in the
+    filename silently chose the wrong file once a release didn't follow
+    that convention: it parsed without error but had none of the columns
+    ingest_schools() looks for, so every row was skipped and the state
+    "ingested" 0 schools with no error anywhere — the scrape then quietly
+    reported "0 schools processed" as if it had genuinely found nothing.
+    Checking actual header columns is immune to filename changes."""
+    for name in csv_names:
+        try:
+            if _looks_like_school_csv(zf, name):
+                return name
+        except Exception:
+            continue
+    # Header sniffing found nothing recognizable (e.g. unexpected
+    # encoding) — fall back to the old filename heuristic rather than
+    # failing outright.
+    school_csvs = [n for n in csv_names if "_sch_" in n.lower()]
+    return school_csvs[0] if school_csvs else csv_names[0]
 
 
 # ---------------------------------------------------------------------------
@@ -331,12 +396,18 @@ def ingest_schools(
     limit: int | None = None,
     source_file: Path | None = None,
     should_stop=None,
+    on_progress=None,
 ) -> int:
     """`should_stop` is an optional zero-arg callable checked periodically so
     a web-UI Stop request can abort mid-parse — the national CSV is 100k+
     rows and can take minutes on a slow host. Stopping partway is safe
     (INSERT OR IGNORE keyed on nces_id resumes cleanly next run), but the
-    caller must then NOT treat the state as fully ingested."""
+    caller must then NOT treat the state as fully ingested.
+
+    `on_progress(rows_scanned, schools_inserted)` is an optional callback
+    invoked periodically (same cadence as should_stop) so a caller doing a
+    long all-states ingest (see desktop_app.py) can show the user something
+    other than a frozen-looking window."""
     if source_file is None:
         download_nces()
         source_file = RAW_CSV
@@ -352,9 +423,12 @@ def ingest_schools(
 
     with get_conn() as conn:
         for row_i, row in enumerate(_iter_rows(source_file)):
-            if should_stop is not None and row_i % 2000 == 0 and should_stop():
-                log.info("Ingest stopped early by request (%d rows scanned).", row_i)
-                break
+            if row_i % 2000 == 0:
+                if should_stop is not None and should_stop():
+                    log.info("Ingest stopped early by request (%d rows scanned).", row_i)
+                    break
+                if on_progress is not None:
+                    on_progress(row_i, inserted)
             state = (row.get("ST") or row.get("STABR") or "").strip().upper()
             if states_upper and state not in states_upper:
                 continue

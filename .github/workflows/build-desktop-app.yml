@@ -65,6 +65,23 @@ jobs:
 
       - name: Build with PyInstaller
         run: pyinstaller desktop_app.spec --noconfirm
+        env:
+          # actions/setup-python's macOS Python is a universal2 (fat)
+          # binary, and PyInstaller's auto-detected target_arch from that
+          # has been unreliable (see desktop_app.spec) — pin it explicitly
+          # per matrix leg instead of trusting auto-detection.
+          PYINSTALLER_TARGET_ARCH: ${{ runner.os == 'macOS' && (runner.arch == 'ARM64' && 'arm64' || 'x86_64') || '' }}
+
+      - name: Verify macOS binary architecture
+        if: runner.os == 'macOS'
+        run: |
+          expected=$([ "${{ runner.arch }}" = "ARM64" ] && echo arm64 || echo x86_64)
+          actual=$(lipo -archs "dist/CityArtsTeacherFinder.app/Contents/MacOS/CityArtsTeacherFinder")
+          echo "Runner arch: ${{ runner.arch }} -> expected slice: $expected; built slice(s): $actual"
+          if ! echo "$actual" | tr ' ' '\n' | grep -qx "$expected"; then
+            echo "::error::Built .app is '$actual' but this runner (${{ runner.arch }}) needs '$expected'. This is exactly the 'not supported on this Mac' bug — failing instead of shipping a broken artifact."
+            exit 1
+          fi
 
       - name: Zip macOS .app
         if: runner.os == 'macOS'

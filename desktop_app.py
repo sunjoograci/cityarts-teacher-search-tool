@@ -156,6 +156,85 @@ def _run_chromium_install_with_ui() -> None:
         sys.exit(1)
 
 
+def _all_states_marker():
+    from src.paths import user_data_dir
+    return user_data_dir() / "all_states_ingested.marker"
+
+
+def _run_school_ingest_with_ui() -> None:
+    """Load the national school directory for every state up front, on
+    first launch, instead of the web app's default lazy per-state ingest
+    (run_scraper() ingests a state the first time someone scrapes it). A
+    non-technical user clicking "Start Scraping" and seeing "Ingesting
+    school list..." followed immediately by "0 schools processed" (a real
+    bug we hit and fixed separately, but the underlying wait itself is
+    also just confusing UX for a packaged app) is a worse experience than
+    paying that wait once, here, with an explicit "why is this taking a
+    while" message.
+
+    Marked with a file in user_data_dir(), not just the in-memory
+    _topped_up_states set, because this needs to survive across app
+    launches (each launch is a fresh process) — without it every single
+    startup would re-scan the ~100k-row national CSV for nothing.
+
+    Failure here is NOT fatal: unlike the Chromium install (scraping
+    literally cannot run without it), a failed eager ingest just means
+    run_scraper()'s existing lazy per-state top-up (with its own error
+    surfacing in the Scrape tab) does the job later instead. No need for
+    two different failure-handling paths for the same underlying call.
+    """
+    marker = _all_states_marker()
+    if marker.exists():
+        from src.ingest import ALL_US_STATES
+        from src.scraper import mark_states_ingested
+        mark_states_ingested(ALL_US_STATES)
+        return
+
+    import tkinter as tk
+    from tkinter import ttk
+
+    root = tk.Tk()
+    root.title("CityArts Teacher Finder — first-time setup")
+    root.geometry("420x140")
+    root.resizable(False, False)
+
+    label = tk.Label(
+        root, text="Loading the national school directory (first launch only)…",
+        wraplength=380, justify="left",
+    )
+    label.pack(pady=(20, 10), padx=20)
+
+    progress = ttk.Progressbar(root, orient="horizontal", length=380, mode="indeterminate")
+    progress.pack(padx=20)
+
+    detail = tk.Label(root, text="", wraplength=380, justify="left", fg="#555")
+    detail.pack(pady=(8, 0), padx=20)
+
+    def worker():
+        from src.ingest import ALL_US_STATES, ingest_schools
+        from src.scraper import mark_states_ingested
+
+        def on_progress(scanned, inserted):
+            def update():
+                detail.config(text=f"Scanned {scanned:,} records, loaded {inserted:,} schools…")
+            root.after(0, update)
+        try:
+            ingest_schools(ALL_US_STATES, on_progress=on_progress)
+            marker.write_text("done")
+            mark_states_ingested(ALL_US_STATES)
+        except Exception as exc:
+            # Non-fatal (see docstring) — just log it; the lazy per-state
+            # path in run_scraper() will retry and surface any real error
+            # once the user actually starts a scrape.
+            print(f"Eager school ingest failed, will retry lazily on scrape: {exc}")
+        finally:
+            root.after(0, root.destroy)
+
+    progress.start(15)
+    threading.Thread(target=worker, daemon=True).start()
+    root.mainloop()
+
+
 def _fatal_error_window(title: str, message: str) -> None:
     try:
         import tkinter as tk
@@ -197,6 +276,8 @@ def _run_status_window(url: str) -> None:
 def main() -> None:
     if not _chromium_installed():
         _run_chromium_install_with_ui()
+
+    _run_school_ingest_with_ui()
 
     port = _find_free_port()
     os.environ["PORT"] = str(port)

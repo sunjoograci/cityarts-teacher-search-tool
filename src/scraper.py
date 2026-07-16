@@ -113,6 +113,15 @@ MISSED_STATUSES = (
 # on a resource-constrained host that wait alone can dwarf the scrape itself.
 _topped_up_states: set[str] = set()
 
+
+def mark_states_ingested(states: list[str]) -> None:
+    """Record states as already topped up without going through
+    run_scraper()'s own ingest call — for a caller (desktop_app.py's
+    startup ingest) that ingested them some other way and wants
+    run_scraper() to skip redoing that full CSV scan on the first
+    Start Scraping click."""
+    _topped_up_states.update(s.upper() for s in states)
+
 # Pre-refactor status strings written by scraper versions older than the
 # STATUS_* constants above (deployments whose database predates that rebuild,
 # e.g. a long-lived Oracle/VM host, will have rows stuck with these forever
@@ -1165,6 +1174,27 @@ async def run_scraper(
         if should_stop and should_stop():
             return  # ingest may have stopped partway — don't mark it topped up
         _topped_up_states.update(states_to_top_up)
+
+        # A state that genuinely has zero schools in the database after we
+        # just tried to ingest it (as opposed to zero *unscraped* ones,
+        # which just means it's already done) means ingestion silently
+        # found nothing for it — e.g. an unexpected NCES file layout — and
+        # the run would otherwise finish looking identical to a normal
+        # "nothing new to do" scrape: "0 schools processed", no error,
+        # nothing telling the user their state never actually loaded.
+        with get_conn() as conn:
+            ph = ",".join("?" * len(states_to_top_up))
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM schools WHERE state IN ({ph})",
+                states_to_top_up,
+            ).fetchone()[0]
+        if total == 0:
+            raise RuntimeError(
+                f"Ingested the NCES school list but found zero schools for "
+                f"{states_to_top_up} — the downloaded file may be in an "
+                "unexpected format. Try again; if it keeps happening, "
+                "this needs a code fix, not a re-run."
+            )
 
     with get_conn() as conn:
         if rescrape_missed:
