@@ -334,12 +334,43 @@ def download_nces(force: bool = False) -> None:
         csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
         if not csv_names:
             raise RuntimeError("No CSV found in NCES zip archive.")
-        school_csvs = [n for n in csv_names if "_sch_" in n.lower()]
-        chosen = school_csvs[0] if school_csvs else csv_names[0]
+        chosen = _pick_school_csv(zf, csv_names)
         log.info("Extracting %s", chosen)
         with zf.open(chosen) as src, open(RAW_CSV, "wb") as dst:
             dst.write(src.read())
     log.info("Extracted %s", RAW_CSV.name)
+
+
+def _looks_like_school_csv(zf: zipfile.ZipFile, name: str) -> bool:
+    """Peek at just the header row and check it has the columns school
+    ingestion actually needs, rather than trusting the filename."""
+    with zf.open(name) as fh:
+        header_line = fh.readline().decode("utf-8-sig", errors="replace")
+    headers = {_normalize_col(c) for c in next(csv.reader([header_line]))}
+    return "NCESSCH" in headers and "SCH_NAME" in headers
+
+
+def _pick_school_csv(zf: zipfile.ZipFile, csv_names: list[str]) -> str:
+    """A CCD "Nonfiscal" release zip bundles school-, LEA(district)-, and
+    state-level directory files together, and NCES has changed its filename
+    convention between releases. Picking by a "_sch_" substring in the
+    filename silently chose the wrong file once a release didn't follow
+    that convention: it parsed without error but had none of the columns
+    ingest_schools() looks for, so every row was skipped and the state
+    "ingested" 0 schools with no error anywhere — the scrape then quietly
+    reported "0 schools processed" as if it had genuinely found nothing.
+    Checking actual header columns is immune to filename changes."""
+    for name in csv_names:
+        try:
+            if _looks_like_school_csv(zf, name):
+                return name
+        except Exception:
+            continue
+    # Header sniffing found nothing recognizable (e.g. unexpected
+    # encoding) — fall back to the old filename heuristic rather than
+    # failing outright.
+    school_csvs = [n for n in csv_names if "_sch_" in n.lower()]
+    return school_csvs[0] if school_csvs else csv_names[0]
 
 
 # ---------------------------------------------------------------------------

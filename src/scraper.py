@@ -1166,6 +1166,27 @@ async def run_scraper(
             return  # ingest may have stopped partway — don't mark it topped up
         _topped_up_states.update(states_to_top_up)
 
+        # A state that genuinely has zero schools in the database after we
+        # just tried to ingest it (as opposed to zero *unscraped* ones,
+        # which just means it's already done) means ingestion silently
+        # found nothing for it — e.g. an unexpected NCES file layout — and
+        # the run would otherwise finish looking identical to a normal
+        # "nothing new to do" scrape: "0 schools processed", no error,
+        # nothing telling the user their state never actually loaded.
+        with get_conn() as conn:
+            ph = ",".join("?" * len(states_to_top_up))
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM schools WHERE state IN ({ph})",
+                states_to_top_up,
+            ).fetchone()[0]
+        if total == 0:
+            raise RuntimeError(
+                f"Ingested the NCES school list but found zero schools for "
+                f"{states_to_top_up} — the downloaded file may be in an "
+                "unexpected format. Try again; if it keeps happening, "
+                "this needs a code fix, not a re-run."
+            )
+
     with get_conn() as conn:
         if rescrape_missed:
             state_ph = ",".join("?" * len(states))
