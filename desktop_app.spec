@@ -32,6 +32,19 @@ hidden_imports = (
     ]
 )
 
+# If left as None, PyInstaller auto-detects the target slice from
+# platform.machine() of the running interpreter. That's usually right, but
+# actions/setup-python installs universal2 (arm64 + x86_64 fat) Python
+# builds on macOS, and PyInstaller's bootloader selection for a universal2
+# interpreter has been unreliable in practice — a build on the "Intel" CI
+# runner still produced an arm64-only .app, which macOS refuses to launch
+# on a real Intel Mac ("not supported on this Mac"). build-desktop-app.yml
+# sets PYINSTALLER_TARGET_ARCH explicitly per matrix leg ("arm64" or
+# "x86_64") to remove the guesswork, and separately verifies the resulting
+# binary's actual arch with `lipo` so a mismatch fails the build instead of
+# shipping silently broken again.
+target_arch = os.environ.get("PYINSTALLER_TARGET_ARCH") or None
+
 # desktop_config.py (build-time-generated, holds REMOTE_INGEST_URL/SECRET —
 # see build-desktop-app.yml) is imported by desktop_app.py inside a
 # try/except ImportError, so a local dev build without one still runs.
@@ -82,7 +95,7 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=(sys.platform == "darwin"),
-    target_arch=None,
+    target_arch=target_arch,
     codesign_identity=None,
     entitlements_file=None,
     icon=None,
