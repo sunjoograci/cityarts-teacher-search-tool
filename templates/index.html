@@ -844,9 +844,16 @@
           const n = data.new_teachers || 0;
           const stateLabel = (data.states || []).join(', ') || 'selected states';
           const iso = data.started_at_iso || '';
+          // current, not total: total is the full target list for this run,
+          // but a Stop click cancels in-flight/pending schools before they're
+          // processed — reporting `total` here made a scrape stopped at
+          // 10/600 falsely claim "600 schools processed."
+          const label = data.stop_requested
+            ? `Scrape stopped early — ${(current||0).toLocaleString()} of ${(total||0).toLocaleString()} schools processed.`
+            : `Scrape complete — ${(current||0).toLocaleString()} schools processed.`;
           resultEl.innerHTML = `
             <div class="scrape-done ok">
-              Scrape complete — ${(total||0).toLocaleString()} schools processed.
+              ${label}
               ${n > 0
                 ? `Found <b>${n.toLocaleString()}</b> new teacher${n === 1 ? '' : 's'}.
                    <button class="btn-view-results" onclick="viewNewTeachers('${esc((data.states||[])[0]||'')}', '${esc(iso)}')">View new teachers →</button>`
