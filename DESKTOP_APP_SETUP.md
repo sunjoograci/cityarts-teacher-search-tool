@@ -1,9 +1,9 @@
-# Running the scraper on your own computer
+# Running the scraper on this computer
 
-This lets you scrape school websites from your home internet connection
-instead of the shared server — schools that block the server's connection
-often work fine from a home connection. Everything you find still lands in
-the same shared database everyone else sees on the website.
+This is a standalone version of the search tool that runs entirely on this
+computer — no separate server, no internet-dependent shared database.
+Everything you scrape is saved right here and shows up in this app's own
+**Art Teachers** tab; nothing is sent anywhere else automatically.
 
 You do **not** need to install Python, or anything else beforehand.
 
@@ -84,8 +84,11 @@ titled "CityArts Teacher Finder" also appears — **keep that window open**
 while you're scraping. Closing it stops the app. When you're done for the
 day, just close that window.
 
-Results you find are sent straight to the shared server as they come in —
-you don't need to export or send anyone a file.
+Results land in this app's own **Art Teachers** tab as they're found —
+everything stays on this computer between launches (closing and reopening
+the app doesn't lose anything). If you need to share what you've found
+with someone else, use the **Download .xlsx** button on the Art Teachers
+tab to export it.
 
 ## Troubleshooting
 

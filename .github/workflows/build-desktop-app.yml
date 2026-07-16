@@ -38,31 +38,16 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Write build-time config (server URL + shared secret)
-        shell: python
-        env:
-          REMOTE_INGEST_URL: ${{ secrets.DESKTOP_REMOTE_INGEST_URL }}
-          REMOTE_INGEST_SECRET: ${{ secrets.DESKTOP_REMOTE_INGEST_SECRET }}
-        run: |
-          import os
-          import sys
-
-          url = os.environ.get("REMOTE_INGEST_URL", "")
-          secret = os.environ.get("REMOTE_INGEST_SECRET", "")
-          if not url or not secret:
-              print(
-                  "::error::Repo secrets DESKTOP_REMOTE_INGEST_URL and "
-                  "DESKTOP_REMOTE_INGEST_SECRET must both be set "
-                  "(Settings -> Secrets and variables -> Actions) before "
-                  "building. See the security note in src/remote_ingest.py "
-                  "/ app.py's /api/ingest/school docstring."
-              )
-              sys.exit(1)
-
-          with open("desktop_config.py", "w") as f:
-              f.write(f"REMOTE_INGEST_URL = {url!r}\n")
-              f.write(f"REMOTE_INGEST_SECRET = {secret!r}\n")
-
+      # No desktop_config.py / REMOTE_INGEST_URL is written here on purpose:
+      # this build is meant to run standalone on one machine, with results
+      # staying in that machine's own local database and its own Art
+      # Teachers tab — not pushed to a central server. desktop_app.py
+      # already tolerates a missing desktop_config.py (falls back to
+      # os.environ, which is empty here), so app.py's _REMOTE_INGEST_URL
+      # stays unset and every scrape persists locally via _default_persist.
+      # (src/remote_ingest.py's remote-push mode still exists in the
+      # codebase for scrape_service.py's Vercel-proxy setup — it's just not
+      # wired into this desktop build.)
       - name: Build with PyInstaller
         run: pyinstaller desktop_app.spec --noconfirm
         env:

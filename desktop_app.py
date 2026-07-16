@@ -5,16 +5,22 @@ This is the PyInstaller entry point. It is NOT app.py's `python app.py` path
 (that stays the server-side / dev entry point, unchanged) — this file wraps
 it for a double-click, no-terminal experience:
 
-  1. Point this run at the shared central server (REMOTE_INGEST_URL/SECRET),
-     baked in at build time by CI (see desktop_config.py.example).
-  2. Make sure Chromium is present (first launch only), showing a progress
+  1. Make sure Chromium is present (first launch only), showing a progress
      window instead of a silently "hung" app.
+  2. Load the national school directory (first launch only), same reason.
   3. Start the existing Flask app (templates/index.html, all /api/* routes
      — untouched) on a background thread.
   4. Open the user's default browser to it.
   5. Show a small "app is running" window so there's an obvious, visible
      way to stop it (closing a windowed/-noconsole exe has no console to
      Ctrl+C).
+
+Everything scraped stays in this machine's own local database (see
+src/db.py) and shows up in this app's own Art Teachers tab — this build
+is meant to run standalone on one computer, not push results to a shared
+server. (REMOTE_INGEST_URL/SECRET-based remote push still exists in
+src/remote_ingest.py for other deployments, e.g. scrape_service.py's
+Vercel-proxy setup; build-desktop-app.yml just doesn't configure it here.)
 """
 import os
 import re
@@ -26,21 +32,6 @@ import time
 import webbrowser
 
 from src.paths import is_frozen, user_data_dir
-
-# ---------------------------------------------------------------------------
-# Build-time config: REMOTE_INGEST_URL / REMOTE_INGEST_SECRET are baked into
-# desktop_config.py by the GitHub Actions build (see
-# .github/workflows/build-desktop-app.yml). That file is gitignored and
-# never committed with a real secret. Local `python desktop_app.py` runs
-# fall back to whatever's already in the environment (e.g. a local .env),
-# same as app.py does on its own.
-# ---------------------------------------------------------------------------
-try:
-    import desktop_config  # type: ignore
-    os.environ.setdefault("REMOTE_INGEST_URL", desktop_config.REMOTE_INGEST_URL)
-    os.environ.setdefault("REMOTE_INGEST_SECRET", desktop_config.REMOTE_INGEST_SECRET)
-except ImportError:
-    pass
 
 # Playwright's Chromium download and cache go to a stable per-user
 # location, not wherever the exe happens to be running from.
