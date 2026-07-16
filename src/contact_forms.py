@@ -34,6 +34,7 @@ from .scraper import (
     DELAY_BETWEEN_REQUESTS,
     find_directory,
     EMAIL_RE,
+    make_http_session,
 )
 
 log = logging.getLogger(__name__)
@@ -350,7 +351,7 @@ async def run_contact_form_check(
     robots = RobotsCache()
     total_updated = 0
 
-    async with aiohttp.ClientSession(headers={"User-Agent": SCRAPER_UA}) as session:
+    async with make_http_session({"User-Agent": SCRAPER_UA}) as session:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
             for i, (school_id, school) in enumerate(schools.items(), 1):

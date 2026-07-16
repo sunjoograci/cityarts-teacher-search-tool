@@ -5,6 +5,7 @@ aiohttp==3.9.5
 # and get falsely marked NO_DIRECTORY_FOUND.
 Brotli>=1.1
 requests==2.32.3
+certifi>=2024.2.2
 python-dotenv==1.0.1
 dnspython==2.6.1
 openpyxl>=3.1

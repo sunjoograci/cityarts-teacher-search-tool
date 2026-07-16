@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import time
 import urllib.parse
 import urllib.robotparser
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import aiohttp
+import certifi
 from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PWTimeout
 
 from . import access_strategies as acc
@@ -79,6 +81,24 @@ BROWSER_UA = (
 # Navigation timeout for page.goto. The old fixed 20s proved too tight for
 # slow school CMSes even on healthy hosts, inflating TIMEOUT counts.
 NAV_TIMEOUT_MS = int(os.environ.get("SCRAPE_NAV_TIMEOUT_MS", "45000"))
+
+# A PyInstaller-frozen macOS build doesn't get the "Install
+# Certificates.command" CA trust setup a normal python.org install runs
+# post-install, so aiohttp's default ssl.create_default_context() there
+# fails CERTIFICATE_VERIFY_FAILED on essentially every HTTPS request. This
+# was silent and easy to miss: every directory-discovery probe in
+# path_discovery.py failed instantly (not a timeout — a handshake
+# rejection), which looks identical to a school genuinely having no staff
+# directory (NO_DIRECTORY_FOUND), so a run "completed" fast with a full
+# schools-processed count and zero teachers found, no exception, no error
+# anywhere. Pinning to certifi's bundled CA store (same fix already
+# applied to src/ingest.py's NCES download) sidesteps the interpreter's
+# own broken trust store entirely.
+_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+
+
+def make_http_session(headers: dict) -> aiohttp.ClientSession:
+    return aiohttp.ClientSession(headers=headers, connector=aiohttp.TCPConnector(ssl=_SSL_CONTEXT))
 
 # Statuses matching the output contract (Stage 6).
 STATUS_OK = "OK"
@@ -917,7 +937,7 @@ async def scrape_school(
         robots = RobotsCache()
     own_session = session is None
     if own_session:
-        session = aiohttp.ClientSession(headers={"User-Agent": BROWSER_UA})
+        session = make_http_session({"User-Agent": BROWSER_UA})
 
     url = await _preferred_base_url(url, session)
 
@@ -1264,7 +1284,7 @@ async def run_scraper(
 
     sem = asyncio.Semaphore(concurrency)
 
-    async with aiohttp.ClientSession(headers={"User-Agent": BROWSER_UA}) as session:
+    async with make_http_session({"User-Agent": BROWSER_UA}) as session:
         async with async_playwright() as pw:
             # --disable-dev-shm-usage: Docker's default /dev/shm is 64MB, far
             # below what Chromium wants. On a host that doesn't raise it (e.g.
