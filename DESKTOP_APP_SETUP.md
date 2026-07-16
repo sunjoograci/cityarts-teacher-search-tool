@@ -33,10 +33,30 @@ someone who isn't the App Store or Microsoft Store.
 1. Click **More info**
 2. Click **Run anyway**
 
-**Mac — "cannot be opened because the developer cannot be verified":**
-1. Right-click (or Control-click) `CityArtsTeacherFinder.app`
-2. Click **Open**
-3. Click **Open** again in the dialog that appears
+**Mac:** neither the app nor the .exe is signed with a paid developer
+certificate ($99/year, which we don't have), so macOS Gatekeeper blocks it
+by default. Which warning you see depends on your macOS version:
+
+- **"Apple could not verify... is free of malware"** (macOS Sequoia and
+  newer — right-click no longer bypasses this one):
+  1. Try to open the app once and dismiss the warning.
+  2. Open **System Settings → Privacy & Security**, scroll down — you'll
+     see a note that `CityArtsTeacherFinder` was blocked, with an **Open
+     Anyway** button. Click it and authenticate.
+  3. Double-click the app again, click **Open Anyway** in the next dialog.
+
+  Or, faster, in Terminal:
+  ```
+  xattr -cr ~/Downloads/CityArtsTeacherFinder.app
+  ```
+  (adjust the path if you moved the app first), then double-click it
+  normally.
+
+- **"cannot be opened because the developer cannot be verified"** (older
+  macOS):
+  1. Right-click (or Control-click) `CityArtsTeacherFinder.app`
+  2. Click **Open**
+  3. Click **Open** again in the dialog that appears
 
 You only have to do this once per computer.
 
