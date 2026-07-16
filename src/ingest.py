@@ -16,10 +16,11 @@ import html.parser
 import logging
 import re
 import sqlite3
-import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Iterator
+
+import requests
 
 from .db import get_conn, init_db, smart_title_case
 from .paths import user_data_dir
@@ -291,23 +292,42 @@ def download_nces(force: bool = False) -> None:
 
     if not RAW_ZIP.exists() or force:
         downloaded = False
+        failures = []
         for url in NCES_CANDIDATE_URLS:
             try:
                 log.info("Trying NCES URL: %s", url)
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    if resp.status == 200:
-                        RAW_ZIP.write_bytes(resp.read())
-                        log.info("Download complete from %s", url)
-                        downloaded = True
-                        break
+                # requests (not urllib.request) specifically because it
+                # bundles its own certifi CA store — a PyInstaller-frozen
+                # macOS build doesn't ship the system Python's
+                # "Install Certificates.command" trust setup that
+                # urllib/ssl's default context relies on, so urlopen()
+                # there was failing every HTTPS request with
+                # CERTIFICATE_VERIFY_FAILED while silently reporting as a
+                # generic "download failed" with no visible reason.
+                resp = requests.get(
+                    url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30,
+                )
+                resp.raise_for_status()
+                RAW_ZIP.write_bytes(resp.content)
+                log.info("Download complete from %s", url)
+                downloaded = True
+                break
             except Exception as exc:
-                log.debug("  Failed (%s): %s", url, exc)
+                log.warning("  Failed (%s): %s", url, exc)
+                failures.append(f"{url}: {exc}")
 
         if not downloaded:
             print(MANUAL_DOWNLOAD_INSTRUCTIONS.format(csv_path=RAW_CSV))
-            raise SystemExit(
-                "Automatic download failed. See instructions above to download manually."
+            # RuntimeError, not SystemExit: the desktop app's scrape thread
+            # (app.py's _run_scrape_thread) only catches `Exception` to
+            # surface it as the scrape's reported error. SystemExit is a
+            # BaseException, so it used to skip that except clause
+            # entirely and the UI reported the scrape as finished with 0
+            # results instead of showing this failure at all.
+            raise RuntimeError(
+                "Automatic download of the school list failed ("
+                + "; ".join(failures) + "). See instructions above/in "
+                "MANUAL_DOWNLOAD_INSTRUCTIONS to download manually."
             )
 
     with zipfile.ZipFile(RAW_ZIP) as zf:
