@@ -5,3 +5,7 @@ data/*.zip
 __pycache__/
 *.pyc
 .venv/
+desktop_config.py
+build/
+dist/
+*.spec.bak

@@ -1,0 +1,7 @@
+# Copy to desktop_config.py for a local test build of the desktop app.
+# In CI (.github/workflows/build-desktop-app.yml), this file is generated
+# from GitHub secrets right before PyInstaller runs — never commit a real
+# desktop_config.py with an actual secret in it.
+
+REMOTE_INGEST_URL = "http://129.153.189.11:8080"
+REMOTE_INGEST_SECRET = "REPLACE_ME"

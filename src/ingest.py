@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .db import get_conn, init_db, smart_title_case
+from .paths import user_data_dir
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ NCES_CANDIDATE_URLS = [
     "https://nces.ed.gov/ccd/Data/zip/ccd_sch_029_1819_w_0a_04082019_csv.zip",
 ]
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+DATA_DIR = user_data_dir()
 RAW_ZIP = DATA_DIR / "nces_ccd.zip"
 RAW_CSV = DATA_DIR / "nces_ccd.csv"
 

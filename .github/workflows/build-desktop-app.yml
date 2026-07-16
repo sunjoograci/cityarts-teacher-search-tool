@@ -1,0 +1,81 @@
+name: Build desktop app
+
+# Manual + tag-triggered only — NOT on every push to main. This build takes
+# several minutes per OS and produces multi-hundred-MB artifacts; nothing
+# about it should run on every commit. Push a tag like "desktop-v1" to cut
+# a release build, or run it by hand from the Actions tab for a test build.
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "desktop-v*"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Write build-time config (server URL + shared secret)
+        shell: python
+        env:
+          REMOTE_INGEST_URL: ${{ secrets.DESKTOP_REMOTE_INGEST_URL }}
+          REMOTE_INGEST_SECRET: ${{ secrets.DESKTOP_REMOTE_INGEST_SECRET }}
+        run: |
+          import os
+          import sys
+
+          url = os.environ.get("REMOTE_INGEST_URL", "")
+          secret = os.environ.get("REMOTE_INGEST_SECRET", "")
+          if not url or not secret:
+              print(
+                  "::error::Repo secrets DESKTOP_REMOTE_INGEST_URL and "
+                  "DESKTOP_REMOTE_INGEST_SECRET must both be set "
+                  "(Settings -> Secrets and variables -> Actions) before "
+                  "building. See the security note in src/remote_ingest.py "
+                  "/ app.py's /api/ingest/school docstring."
+              )
+              sys.exit(1)
+
+          with open("desktop_config.py", "w") as f:
+              f.write(f"REMOTE_INGEST_URL = {url!r}\n")
+              f.write(f"REMOTE_INGEST_SECRET = {secret!r}\n")
+
+      - name: Build with PyInstaller
+        run: pyinstaller desktop_app.spec --noconfirm
+
+      - name: Zip macOS .app
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent CityArtsTeacherFinder.app CityArtsTeacherFinder-mac.zip
+
+      - name: Upload Windows build
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CityArtsTeacherFinder-windows
+          path: dist/CityArtsTeacherFinder.exe
+          retention-days: 90
+
+      - name: Upload macOS build
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CityArtsTeacherFinder-mac
+          path: dist/CityArtsTeacherFinder-mac.zip
+          retention-days: 90

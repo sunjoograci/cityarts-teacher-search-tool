@@ -4,7 +4,9 @@ import re
 import sqlite3
 from pathlib import Path
 
-_default_db = Path(__file__).parent.parent / "data" / "schools.db"
+from .paths import user_data_dir
+
+_default_db = user_data_dir() / "schools.db"
 DB_PATH = Path(os.environ.get("DB_PATH", str(_default_db)))
 
 

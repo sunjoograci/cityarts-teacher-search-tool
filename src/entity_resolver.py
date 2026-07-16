@@ -25,7 +25,9 @@ import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+from .paths import user_data_dir
+
+DATA_DIR = user_data_dir()
 CCD_CSV = DATA_DIR / "nces_ccd.csv"
 
 ENTITY_TYPES = {"SCHOOL", "DISTRICT", "PARENT_ORG", "PROGRAM", "NOT_A_K12", "AMBIGUOUS"}

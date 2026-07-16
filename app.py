@@ -19,8 +19,9 @@ import requests
 from flask import Flask, jsonify, render_template, request, send_file
 
 from src.db import DB_PATH, get_conn, group_teacher_rows, init_db, normalize_person_name
+from src.paths import bundle_dir
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=str(bundle_dir() / "templates"))
 
 init_db()
 
@@ -63,7 +64,7 @@ _scrape_state: dict = {
 }
 
 
-def _run_scrape_thread(states: list[str], rescrape: bool) -> None:
+def _run_scrape_thread(states: list[str], rescrape: bool, limit: int | None = None) -> None:
     from src.scraper import run_scraper
 
     def on_progress(current, total, school_name, status):
@@ -82,8 +83,8 @@ def _run_scrape_thread(states: list[str], rescrape: bool) -> None:
 
     try:
         asyncio.run(run_scraper(
-            states, rescrape_missed=rescrape, on_progress=on_progress, should_stop=should_stop,
-            persist_fn=persist_fn,
+            states, limit=limit, rescrape_missed=rescrape, on_progress=on_progress,
+            should_stop=should_stop, persist_fn=persist_fn,
         ))
     except Exception as exc:
         _scrape_state["error"] = str(exc)
@@ -117,6 +118,8 @@ def api_scrape_start():
         data = request.get_json(silent=True) or {}
         states = [s.upper() for s in data.get("states", ["TX"])]
         rescrape = bool(data.get("rescrape", False))
+        limit = data.get("limit")
+        limit = int(limit) if limit else None
         _scrape_state.update({
             "running": True,
             "current": 0,
@@ -130,7 +133,7 @@ def api_scrape_start():
             "rescrape": rescrape,
             "stop_requested": False,
         })
-    threading.Thread(target=_run_scrape_thread, args=(states, rescrape), daemon=True).start()
+    threading.Thread(target=_run_scrape_thread, args=(states, rescrape, limit), daemon=True).start()
     return jsonify({"ok": True})
 
 

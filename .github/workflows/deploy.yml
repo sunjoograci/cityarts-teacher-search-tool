@@ -12,11 +12,12 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         env:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+          SCRAPE_SHARED_SECRET: ${{ secrets.SCRAPE_SHARED_SECRET }}
         with:
           host: ${{ secrets.ORACLE_HOST }}
           username: ubuntu
           key: ${{ secrets.ORACLE_SSH_KEY }}
-          envs: DEPLOY_TOKEN
+          envs: DEPLOY_TOKEN,SCRAPE_SHARED_SECRET
           command_timeout: 30m
           script: |
             set -e
@@ -33,6 +34,12 @@ jobs:
             # Chromium instances contend badly for both the fractional CPU
             # and the 1GB ceiling (Render's SCRAPE_CONCURRENCY=4 assumes far
             # more headroom than this box has).
+            #
+            # SCRAPE_SHARED_SECRET authenticates /api/ingest/school (remote
+            # scrapers, e.g. the packaged desktop app) and /api/scrape/*
+            # (see app.py's _check_ingest_secret). Required — without it,
+            # anyone who can reach this box's port 8080 can write into the
+            # shared teacher database.
             sudo docker run -d \
               --name cityarts \
               --restart always \
@@ -40,6 +47,7 @@ jobs:
               -v /data:/data \
               -e DB_PATH=/data/schools.db \
               -e SCRAPE_CONCURRENCY=1 \
+              -e SCRAPE_SHARED_SECRET="$SCRAPE_SHARED_SECRET" \
               -p 8080:8080 \
               -e PORT=8080 \
               cityarts
