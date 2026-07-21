@@ -1037,10 +1037,19 @@ async def scrape_school(
 
         # A-Z letter index (Burnham Wood-style): visit every present letter,
         # not just the default view — an absent letter means no results,
-        # not that the index wasn't checked.
+        # not that the index wasn't checked. Same class of bug as numbered
+        # pagination above: gating this on "only if the default view found
+        # nothing" means a letter whose people happen to include the art
+        # teacher never gets visited if some OTHER, already-visible person
+        # on the default view already classified as art — the exact
+        # "stopped looking after finding the first thing" failure mode
+        # confirmed for pagination (see the comment above). Always walking
+        # every letter when an index exists is cheap for the same reason:
+        # sites without one (the overwhelming majority) never enter this
+        # block at all.
         html = await page.content()
         letters = acc.find_letter_anchors(html)
-        if letters and not records:
+        if letters:
             for letter in letters:
                 try:
                     anchor = await page.query_selector(f"a:has-text('{letter}')")
@@ -1051,11 +1060,23 @@ async def scrape_school(
                 except Exception:
                     continue
 
-        # Numbered pagination.
-        if records:
-            records.extend(await acc.iterate_pagination(
-                page, dir_url, lambda p: _extract_staff(p, dir_url, permissive=False)
-            ))
+        # Numbered pagination — run regardless of whether page 1 already
+        # matched. A combined district-wide roster can span dozens of pages
+        # (confirmed live: Shawnee Heights USD 450's /staff/ has 34 numbered
+        # pages at ~18 people each; Uniontown USD 235 has 5), and which page
+        # the art teacher's row lands on depends only on alphabetical order
+        # — gating this on "page 1 already found something" meant a school
+        # whose art teacher wasn't on page 1 got reported NO_TEACHERS_LISTED
+        # with dozens of unchecked pages still sitting there (confirmed: a
+        # prior scrape had found Uniontown's Chris Woods, Shawnee Heights'
+        # whole 8-person art department, and Wellsville's 2 art teachers —
+        # none of them on page 1 of their respective /staff/ listings, all
+        # silently dropped once pagination stopped being checked). Cheap to
+        # always run: iterate_pagination() is already a no-op when
+        # find_pagination() finds nothing, the overwhelmingly common case.
+        records.extend(await acc.iterate_pagination(
+            page, dir_url, lambda p: _extract_staff(p, dir_url, permissive=False)
+        ))
 
         # Even on a normal staff directory, fall back to the arts department
         # page (permissive extraction) if no one matched.

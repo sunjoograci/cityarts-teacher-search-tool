@@ -273,6 +273,24 @@ async def discover(
 
     # --- 2. CMS fingerprint ---
     home_status, home_text = await fetch(base_url)
+    if home_status and home_status < 400 and home_text:
+        # The homepage itself is fetched here only to detect a CMS and pull
+        # nav links from — nothing else in this candidate list ever tests
+        # its own content against match_fn. For a small single-school
+        # district site, the homepage IS occasionally the staff contact page
+        # outright (no dedicated /staff route at all), so that case was
+        # always missed no matter how the rest of discovery/probing was
+        # tuned — confirmed on a real site (usd244ks.org / Burlington High),
+        # where 2 mailto contacts sit directly on the homepage and no other
+        # candidate here ever matched. Deliberately lowest priority (tried
+        # dead last, after even department pages): a homepage almost always
+        # has SOME generic "Staff"/"Contact Us" nav furniture, which is
+        # exactly the kind of weak signal match_fn's looser branches accept
+        # (real case found: usd356.org's homepage matches on staff-keyword
+        # density alone, zero real mailtos) — going first would let that
+        # false positive win over a later, more specific candidate that
+        # actually has real content. Last-resort keeps this purely additive.
+        add_candidate(base_url, "homepage", priority=7)
     cms = detect_cms(home_text) if home_text else None
     if cms:
         for path in cms_candidate_paths(cms):
