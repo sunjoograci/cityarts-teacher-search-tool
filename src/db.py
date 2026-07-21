@@ -113,7 +113,11 @@ def group_teacher_rows(rows) -> list[dict]:
 
     Rows are expected to have at least teacher_name, district_name, state,
     and school_name keys. Optional id/city/title/email/resolution_method/
-    website_url (or school_website) keys are merged/picked as available.
+    website_url (or school_website)/directory_url keys are merged/picked as
+    available — directory_url travels with email/title/resolution_method
+    (not just carried from whichever school row happened to come first) so
+    a merged row's "where we found this" link matches the school the email
+    or contact-form link actually came from.
     """
     order = []
     groups: dict[tuple, dict] = {}
@@ -137,7 +141,7 @@ def group_teacher_rows(rows) -> list[dict]:
             g["_ids"].append(row["id"])
         has_email = bool(row.get("email"))
         if has_email and not g["_has_email"]:
-            for field in ("title", "email", "resolution_method", "website_url", "school_website"):
+            for field in ("title", "email", "resolution_method", "website_url", "school_website", "directory_url"):
                 if field in row:
                     g[field] = row[field]
             g["_has_email"] = True

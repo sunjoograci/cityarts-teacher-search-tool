@@ -564,12 +564,12 @@
           <tr>
             <td>${esc(r.teacher_name)}</td>
             <td>${esc(r.title || '')}</td>
-            <td>${emailCell(r.email, r.resolution_method, r.website_url)}</td>
+            <td>${emailCell(r.email, r.resolution_method, r.directory_url || r.website_url)}</td>
             <td>${esc(r.school_name)}</td>
             <td>${esc(r.city || '')}</td>
             <td>${esc(r.state)}</td>
             <td>${esc(r.district_name || '')}</td>
-            <td>${websiteLink(r.email, r.resolution_method, r.website_url)}</td>
+            <td>${websiteLink(r.email, r.resolution_method, r.directory_url || r.website_url)}</td>
             <td><button class="btn-delete" onclick="deleteTeacher('${r.ids.join(',')}', this)">Delete</button></td>
           </tr>`).join('')}
         </tbody>
@@ -684,19 +684,23 @@
     window.location = `/export/schools.xlsx?state=${state}`;
   }
 
-  function websiteLink(email, method, websiteUrl) {
+  // `directoryUrl` here is the actual staff-directory page a teacher was
+  // found on (schools.directory_url), not just the school's homepage —
+  // callers pass r.directory_url || r.website_url so older rows saved
+  // before directory_url was tracked still fall back to something.
+  function websiteLink(email, method, directoryUrl) {
     const isContactForm = method === 'send_message_button' || method === 'contact_form'
                           || (email && email.startsWith('http'));
-    const url = isContactForm ? email : websiteUrl;
+    const url = isContactForm ? email : directoryUrl;
     return url ? `<a href="${esc(url)}" target="_blank" rel="noopener">↗</a>` : '';
   }
 
-  function emailCell(email, method, websiteUrl) {
+  function emailCell(email, method, directoryUrl) {
     if (!email) return badge('no email', 'gray');
     // Contact form / send-message button — email column holds a URL, not an address
     if (method === 'send_message_button' || method === 'contact_form' || email.startsWith('http')) {
-      const link = email.startsWith('http') ? email : websiteUrl;
-      return `<a href="${esc(link)}" target="_blank" rel="noopener">${badge('reach out on website', 'orange')}</a>`;
+      const link = email.startsWith('http') ? email : directoryUrl;
+      return `<a href="${esc(link)}" target="_blank" rel="noopener">${badge('contact on website', 'orange')}</a>`;
     }
     return `<a href="mailto:${esc(email)}">${esc(email)}</a>`;
   }

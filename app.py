@@ -218,6 +218,11 @@ def api_ingest_school():
     if not _check_ingest_secret():
         return jsonify({"error": "unauthorized"}), 401
 
+    # Local import: keeps this module importable without Playwright
+    # installed (see run_scraper's import below) — this function only pulls
+    # in src.scraper on an actual POST, never at app startup.
+    from src.scraper import resolution_method_for_email
+
     data = request.get_json(silent=True) or {}
     school = data.get("school") or {}
     nces_id = (school.get("nces_id") or "").strip()
@@ -281,7 +286,7 @@ def api_ingest_school():
                 """,
                 (
                     school_id, name, r.get("title"), email,
-                    "scraped" if email else "unresolved",
+                    resolution_method_for_email(email),
                     r.get("discipline"), r.get("email_source"),
                     int(bool(r.get("email_verified"))), r.get("evidence_url"),
                     r.get("extraction_strategy"), now,
@@ -414,7 +419,7 @@ def api_teachers():
         rows = conn.execute(
             f"""SELECT s.id, s.teacher_name, s.title, s.email, s.resolution_method,
                        sc.school_name, sc.city, sc.state, sc.district_name,
-                       sc.website_url
+                       sc.website_url, sc.directory_url
                 FROM staff s
                 JOIN schools sc ON sc.id = s.school_id {where}
                 ORDER BY sc.state, sc.school_name, s.teacher_name""",
@@ -522,7 +527,7 @@ def export_teachers_xlsx():
         rows = conn.execute(
             f"""SELECT s.teacher_name, s.title, s.email, s.resolution_method,
                        sc.school_name, sc.city, sc.state, sc.district_name,
-                       sc.website_url
+                       sc.website_url, sc.directory_url
                 FROM staff s
                 JOIN schools sc ON sc.id = s.school_id {where}
                 ORDER BY sc.state, sc.school_name, s.teacher_name""",
@@ -548,21 +553,38 @@ def export_teachers_xlsx():
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center")
 
+    link_font = Font(color="0563C1", underline="single")
+
     for row in rows:
         email_val = row["email"] or ""
         method = row["resolution_method"] or ""
-        is_form = method in ("send_message_button", "contact_form") or email_val.startswith("http")
+        is_url = email_val.startswith("http")
+        is_form = method in ("send_message_button", "contact_form") or is_url
+        # The directory page this teacher was actually found on, not just
+        # the school's generic homepage — falls back to the homepage for
+        # older rows saved before directory_url was tracked, or a school
+        # whose only match was the homepage itself.
+        directory_link = row["directory_url"] or row["website_url"] or ""
         ws.append([
             row["teacher_name"],
             row["title"],
-            "reach out on website" if is_form else email_val,
+            "contact on website" if is_form else email_val,
             method,
             row["school_name"],
             row["city"],
             row["state"],
             row["district_name"],
-            row["website_url"] or "",
+            directory_link,
         ])
+        r = ws.max_row
+        if is_url:
+            cell = ws.cell(row=r, column=3)
+            cell.hyperlink = email_val
+            cell.font = link_font
+        if directory_link:
+            cell = ws.cell(row=r, column=9)
+            cell.hyperlink = directory_link
+            cell.font = link_font
 
     col_widths = [22, 24, 28, 16, 32, 16, 6, 28, 36]
     for i, width in enumerate(col_widths, 1):

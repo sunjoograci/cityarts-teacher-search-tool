@@ -1161,6 +1161,20 @@ async def _default_persist(
     return saved
 
 
+def resolution_method_for_email(email: Optional[str]) -> str:
+    """A `send a message` contact-form link (see _resolve_email's final
+    fallback) is stored in the same `email` column as a real address, since
+    that's the only contact info this person has — but it must not be
+    tagged "scraped" (which every consumer of resolution_method, from the
+    xlsx export to the web UI, reads as "we have a real email address").
+    Distinguish by shape: a real address never starts with "http"."""
+    if not email:
+        return "unresolved"
+    if email.startswith("http"):
+        return "send_message_button"
+    return "scraped"
+
+
 def save_staff(school_id: int, records: list[StaffRecord]) -> int:
     import datetime
     saved = 0
@@ -1177,7 +1191,7 @@ def save_staff(school_id: int, records: list[StaffRecord]) -> int:
                 """,
                 (
                     school_id, normalize_person_name(r.name), r.title, r.email,
-                    "scraped" if r.email else "unresolved",
+                    resolution_method_for_email(r.email),
                     r.discipline, r.email_source, int(bool(r.email_verified)), r.evidence_url,
                     r.extraction_strategy, now,
                 ),

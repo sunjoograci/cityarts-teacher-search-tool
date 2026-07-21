@@ -28,7 +28,7 @@ def export_csv(states: list[str], out_path: str | None = None) -> int:
                 s.title,
                 s.email,
                 s.resolution_method,
-                sc.website_url AS school_website
+                COALESCE(sc.directory_url, sc.website_url) AS school_website
             FROM staff s
             JOIN schools sc ON sc.id = s.school_id
             WHERE sc.state IN ({})
@@ -59,7 +59,7 @@ def export_csv(states: list[str], out_path: str | None = None) -> int:
             if r.get("resolution_method") in ("send_message_button", "contact_form") or (
                 r.get("email", "") or ""
             ).startswith("http"):
-                r["email"] = "reach out on website"
+                r["email"] = "contact on website"
             writer.writerow(r)
     finally:
         if out_path:
