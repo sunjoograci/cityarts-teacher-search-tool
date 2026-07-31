@@ -128,7 +128,7 @@ A packaged, no-Python-required desktop build is also available — see
 
 ## Demo
 
-A recording of the tool in action is linked/included separately.
+[Watch a recording of the tool in action](docs/demo.mp4).
 
 ## Tests
 
