@@ -79,8 +79,8 @@ level.
 ### 1. Clone and install dependencies
 
 ```bash
-git clone https://github.com/sunjoograci/CITYarts-teacher-search-tool.git
-cd CITYarts-teacher-search-tool
+git clone https://github.com/sunjoograci/cityarts-teacher-search-tool.git
+cd cityarts-teacher-search-tool
 pip install -r requirements.txt
 playwright install chromium
 ```
