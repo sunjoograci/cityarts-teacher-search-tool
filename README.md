@@ -1,24 +1,24 @@
-# CityArts Teacher Finder
+# CITYarts Teacher Finder
 
 An automated tool that finds art teacher contacts at public schools across
-the US — school by school, discovering staff directories, extracting names
-and titles, and resolving verified email addresses — so outreach can happen
+the US. School by school, it discovers staff directories, extracting names
+and titles and resolving verified email addresses so that outreach can happen
 at scale instead of one manually-researched school at a time.
 
 ## The problem
 
-CityArts, an arts education nonprofit, needs contact info for art teachers
+CITYarts, an arts education nonprofit, needs contact info for art teachers
 at public schools nationwide in order to reach out about programs and
 resources. Historically this meant someone manually visiting each school's
 website, hunting for a staff directory, identifying who teaches art, and
-copying down (or guessing) an email address — a slow, tedious process that
+copying down (or guessing) an email address. This slow, tedious process
 doesn't scale beyond a handful of schools a day.
 
-This tool replaces that manual research: point it at a list of states (or
+The tool I created replaces that manual research: point it at a list of states (or
 the whole country) and it ingests the official list of public schools,
 crawls each school's website for a staff directory, identifies art
-teachers, and resolves an email address for each one — turning what used to
-be days of staff time into an unattended batch job.
+teachers, and resolves an email address for each one. What used to
+be days of staff time turns into an unattended batch job.
 
 ## How it works
 
@@ -79,8 +79,8 @@ level.
 ### 1. Clone and install dependencies
 
 ```bash
-git clone https://github.com/sunjoograci/cityarts-teacher-search-tool.git
-cd cityarts-teacher-search-tool
+git clone https://github.com/sunjoograci/CITYarts-teacher-search-tool.git
+cd CITYarts-teacher-search-tool
 pip install -r requirements.txt
 playwright install chromium
 ```
