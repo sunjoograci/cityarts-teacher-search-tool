@@ -1,10 +1,17 @@
 data/*.csv
 data/*.zip
 *.zip
+*.db
+*.log
 .env
 __pycache__/
 *.pyc
 .venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.DS_Store
 desktop_config.py
 build/
 dist/
